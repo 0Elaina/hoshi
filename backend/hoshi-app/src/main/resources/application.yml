@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: hoshi
+  flyway:
+    default-schema: public
+    locations: classpath:db/migration
+    validate-migration-naming: true
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    root: INFO
+  file:
+    name: ${LOG_FILE:./logs/hoshi.log}
+  logback:
+    rollingpolicy:
+      file-name-pattern: ${logging.file.name}.%d{yyyy-MM-dd}.%i.gz
+      max-file-size: 50MB
+      max-history: 30
+      total-size-cap: 1GB
+      clean-history-on-start: true

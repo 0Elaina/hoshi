@@ -1,0 +1,27 @@
+# Local agent instructions and context
+/AGENTS.md
+/AGENT.md
+/agents.md
+/agent.md
+/CONTEXT.md
+/context.md
+/.agents/
+/.codex/
+
+# Local credentials and root environment files
+/.aws/
+/.env
+/.env.*
+!/.env.example
+!/.env.*.example
+
+# Root editor and operating system files
+/.idea/
+/.vscode/
+/.DS_Store
+/Thumbs.db
+
+# Root logs
+/logs/
+/*.log
+/*.log.*
