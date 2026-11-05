@@ -11,4 +11,8 @@ public record CreateUserRequest(
     private static final String USERNAME_PATTERN = "[A-Za-z0-9_]{3,32}";
 
     private static final String PASSWORD_PATTERN = "[!-~]{8,72}";
+
+    public CreateUserRequest {
+        nickname = nickname == null ? null : nickname.strip();
+    }
 }
