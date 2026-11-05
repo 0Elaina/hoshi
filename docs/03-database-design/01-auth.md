@@ -15,7 +15,7 @@
 | expires_at | TIMESTAMPTZ | NOT NULL | 会话绝对过期时间（UTC） |
 | revoked_at | TIMESTAMPTZ | 允许 NULL | 会话主动撤销时间（UTC），未撤销时为 NULL |
 | created_at | TIMESTAMPTZ | NOT NULL | 会话创建时间（UTC） |
-| updated_at | TIMESTAMPTZ | NOT NULL | 会话最近活跃或刷新时间（UTC） |
+| updated_at | TIMESTAMPTZ | NOT NULL | 记录最近更新时间（UTC） |
 
 **索引**
 
@@ -29,7 +29,7 @@
 
 | 关系 | 目标表 | 外键字段 | 说明 |
 | --- | --- | --- | --- |
-| N:1 | users | user_id | 关联用户账号；删除或修改用户时 RESTRICT，禁止级联物理删除 |
+| N:1 | users | user_id | 关联用户账号；删除用户或修改被引用的用户 ID 时 RESTRICT，禁止级联物理删除 |
 
 **建表 SQL**
 
