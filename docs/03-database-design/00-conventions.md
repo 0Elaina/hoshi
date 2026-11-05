@@ -14,9 +14,18 @@ Flyway 的 starter、PostgreSQL 支持模块和迁移资源归 `hoshi-app`。迁
 
 没有业务迁移时，Flyway 可以建立 `flyway_schema_history` 并正常完成启动；日志中的无迁移提示不表示需要创建占位 SQL。实际业务表和索引在迁移执行后归档到相应模块文档。
 
+## 业务枚举与字段类型
+
+业务枚举由 Java 代码显式维护，数据库列直接存储普通字符串（如 `VARCHAR(16)` 或 `VARCHAR(32)`），不定义 PostgreSQL 原生 `CREATE TYPE ... AS ENUM`。
+
+持久化约定：
+- 数据库保存枚举常量名称字符串（如 `USER`、`ENABLED`、`ADMIN`）。
+- Java 实体属性根据各模块约定使用字符串或对应枚举类型；使用枚举类型时由 MyBatis 默认的 `EnumTypeHandler` 进行名称映射，不添加 `@EnumValue` 或实现额外接口。
+- 修改或废弃已有枚举值需评估历史数据兼容性并通过数据迁移同步处理。
+
 ## 公共时间字段
 
-需要统一创建和更新时间的实体继承 `com.nep.common.entity.BaseEntity`。公共字段约定如下，具体业务表的完整结构与约束在对应迁移中确定。
+各实体不继承公共基类，而是分别独立声明创建与更新时间成员。公共字段约定如下：
 
 | Java 字段 | Java 类型 | 数据库列 | PostgreSQL 类型 | 填充行为 |
 | --- | --- | --- | --- | --- |
@@ -27,7 +36,7 @@ Flyway 的 starter、PostgreSQL 支持模块和迁移资源归 `hoshi-app`。迁
 
 PostgreSQL 的 TIMESTAMPTZ 保存时间点，不保存原始时区或偏移；pgJDBC 对应使用 OffsetDateTime，并以 UTC 偏移读取。
 
-MyBatis-Plus 自动填充依赖实体及字段填充元数据。`update(entity, wrapper)` 的 entity 必须非空；只传 Wrapper 的更新或自定义 SQL 需要显式维护更新时间。公共实体不统一声明主键、版本号、逻辑删除或操作人，具体表按业务需要增加。
+MyBatis-Plus 自动填充依赖实体及字段填充元数据。`update(entity, wrapper)` 的 entity 必须非空；只传 Wrapper 的更新或自定义 SQL 需要显式维护更新时间。各实体不统一定义公共基类，主键、版本号、逻辑删除或操作人按具体业务表按需增加。
 
 ## MyBatis-Plus 使用
 
