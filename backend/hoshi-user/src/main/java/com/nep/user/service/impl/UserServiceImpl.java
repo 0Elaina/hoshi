@@ -75,11 +75,14 @@ public class UserServiceImpl implements UserService {
     @Override
     public PageResult<UserVO> listUsers(UserQuery query) {
         Page<User> page = query.toPage();
+        String username = query.getUsername() == null ? null : SqlUtils.escapeLike(query.getUsername());
+        String nickname = query.getNickname() == null ? null : SqlUtils.escapeLike(query.getNickname());
+        String status = query.getStatus() == null ? null : query.getStatus().name();
         userMapper.selectPage(page, new LambdaQueryWrapper<User>()
                 .eq(User::getRole, UserRole.USER.name())
-                .like(query.getUsername() != null, User::getUsername, SqlUtils.escapeLike(query.getUsername()))
-                .like(query.getNickname() != null, User::getNickname, SqlUtils.escapeLike(query.getNickname()))
-                .eq(query.getStatus() != null, User::getStatus, query.getStatus().name())
+                .like(username != null, User::getUsername, username)
+                .like(nickname != null, User::getNickname, nickname)
+                .eq(status != null, User::getStatus, status)
                 .orderByDesc(User::getId));
         List<UserVO> records = page.getRecords().stream().map(UserVO::of).toList();
         return new PageResult<UserVO>(records, page.getTotal(), page.getCurrent(), page.getSize());
