@@ -5,7 +5,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.nep.user.entity.User;
+import com.nep.user.model.entity.User;
 
 @Mapper
 public interface UserMapper extends BaseMapper<User> {

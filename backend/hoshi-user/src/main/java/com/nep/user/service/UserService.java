@@ -1,8 +1,9 @@
 package com.nep.user.service;
 
 import com.nep.common.page.PageResult;
-import com.nep.user.dto.UserQuery;
-import com.nep.user.vo.UserVO;
+import com.nep.user.model.dto.UserQuery;
+import com.nep.user.model.enums.UserStatus;
+import com.nep.user.model.vo.UserVO;
 
 public interface UserService {
     /**
@@ -30,4 +31,21 @@ public interface UserService {
      * @param nickname 昵称
      */
     void updateUserNickname(Long userId, String nickname);
+
+    /**
+     * 更新用户状态
+     * 
+     * @param userId 用户ID
+     * @param status 状态
+     */
+    void updateUserStatus(Long userId, UserStatus status);
+
+    /**
+     * 重置用户密码
+     * 
+     * @param userId      用户ID
+     * @param newPassword 新密码
+     */
+    void resetUserPassword(Long userId, String newPassword);
+
 }

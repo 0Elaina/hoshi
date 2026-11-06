@@ -1,9 +1,9 @@
-package com.nep.user.dto;
+package com.nep.user.model.dto;
 
 import org.springframework.util.StringUtils;
 
 import com.nep.common.page.PageQuery;
-import com.nep.user.enums.UserStatus;
+import com.nep.user.model.enums.UserStatus;
 
 import jakarta.validation.constraints.Size;
 import lombok.Getter;

@@ -1,4 +1,4 @@
-package com.nep.user.dto;
+package com.nep.user.model.dto;
 
 import com.nep.user.util.UserValidationUtils;
 
