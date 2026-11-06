@@ -1,4 +1,4 @@
-package com.nep.user.enums;
+package com.nep.user.model.enums;
 
 public enum UserRole {
     USER,

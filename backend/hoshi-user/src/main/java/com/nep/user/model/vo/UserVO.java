@@ -1,8 +1,8 @@
-package com.nep.user.vo;
+package com.nep.user.model.vo;
 
 import java.time.OffsetDateTime;
 
-import com.nep.user.entity.User;
+import com.nep.user.model.entity.User;
 
 import lombok.Builder;
 

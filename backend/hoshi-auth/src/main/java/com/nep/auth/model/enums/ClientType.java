@@ -1,4 +1,4 @@
-package com.nep.auth.enums;
+package com.nep.auth.model.enums;
 
 public enum ClientType {
     ADMIN

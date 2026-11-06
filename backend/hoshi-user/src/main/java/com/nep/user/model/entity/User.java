@@ -1,4 +1,4 @@
-package com.nep.auth.entity;
+package com.nep.user.model.entity;
 
 import java.time.OffsetDateTime;
 
@@ -14,16 +14,16 @@ import lombok.Setter;
 
 @Getter
 @Setter
-@TableName("auth_sessions")
-public class AuthSession {
+@TableName("users")
+public class User {
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    private Long userId;
-    private String clientType;
-    private String currentRefreshJti;
-    private OffsetDateTime expiresAt;
-    private OffsetDateTime revokedAt;
+    private String username;
+    private String passwordHash;
+    private String nickname;
+    private String role;
+    private String status;
 
     @TableField(fill = FieldFill.INSERT, updateStrategy = FieldStrategy.NEVER)
     private OffsetDateTime createdAt;
