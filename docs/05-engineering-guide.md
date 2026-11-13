@@ -19,16 +19,33 @@
 
 ## 启动后端
 
-在 `backend/` 下使用 Go 1.27 执行 `go run ./cmd/server`。应用从进程环境读取以下配置。PostgreSQL 和 Redis 的连接参数取自共享基础设施的实际配置。凭据只保存在本地环境中。
+使用 Java 21。开发环境连接配置放在 `backend/hoshi-app/config/application-dev.yml`，该文件由 Git 忽略。PostgreSQL 的用户名、密码和端口取自共享基础设施，数据库名为 `hoshi`。Redis 的端口和密码取自同一共享配置。应用默认激活 `dev`，Wrapper 从 `backend/` 调用，应用以 `hoshi-app/` 为工作目录并自动加载该目录下的 `config/application-dev.yml`。进程环境变量优先于配置文件。 [Spring Boot 外部配置](https://docs.spring.io/spring-boot/reference/features/external-config.html) · [Boot 插件工作目录](https://docs.spring.io/spring-boot/maven-plugin/run.html#goals-run-parameters-details-workingDirectory)
 
-| 环境变量 | 默认值 | 用途 |
+| 环境变量 | 未配置时 | 用途 |
 | --- | --- | --- |
-| `HOSHI_HTTP_ADDR` | `127.0.0.1:8080` | Gin 的监听地址 |
-| `HOSHI_POSTGRES_DSN` | 必填 | 指向共享 PostgreSQL 的 `hoshi` 库，沿用现有账号 |
-| `HOSHI_REDIS_ADDR` | `127.0.0.1:6379` | 共享 Redis 的宿主机地址，端口以 Compose 的实际映射为准 |
-| `HOSHI_REDIS_PASSWORD` | 必填 | 共享实例的 `REDIS_PASSWORD` |
+| `SPRING_DATASOURCE_URL` | 从本地配置读取 | PostgreSQL JDBC URL，例如 `jdbc:postgresql://127.0.0.1:5432/hoshi` |
+| `SPRING_DATASOURCE_USERNAME` | 从本地配置读取 | 共享 PostgreSQL 用户 |
+| `SPRING_DATASOURCE_PASSWORD` | 从本地配置读取 | 共享 PostgreSQL 密码 |
+| `SPRING_DATA_REDIS_HOST` | 本地配置，其次 `HOSHI_REDIS_HOST` 或 `127.0.0.1` | 共享 Redis 的宿主机地址 |
+| `SPRING_DATA_REDIS_PORT` | 本地配置，其次 `HOSHI_REDIS_PORT` 或 `6379` | 共享 Redis 的宿主机端口 |
+| `SPRING_DATA_REDIS_PASSWORD` | 本地配置，其次 `HOSHI_REDIS_PASSWORD` | 共享实例的 Redis 密码 |
 
-本机 PostgreSQL DSN 可使用 `host=127.0.0.1 port=5432 dbname=hoshi user=现有角色 password=现有密码 sslmode=disable` 的形式，按共享实例的实际配置替换地址、端口和凭据。Redis 使用共享实例的默认逻辑库 `0`，客户端在首次执行 Redis 命令时建立连接。 [GORM PostgreSQL 连接指南](https://gorm.io/docs/connecting_to_the_database.html) · [go-redis 连接指南](https://redis.io/docs/latest/develop/clients/go/)
+```bash
+./mvnw -pl hoshi-app -am spring-boot:run
+```
+
+Maven Wrapper 使用 Maven 3.10.0。上游模块参与构建，`hoshi-app` 启动并默认监听 `127.0.0.1:8080`。用启动日志确认应用与 Flyway 初始化成功。Redis 在首次执行 Redis 命令时连接，默认使用逻辑库 `0`。 [Spring Boot Maven 启动](https://docs.spring.io/spring-boot/maven-plugin/run.html) · [Spring Data Redis 配置](https://docs.spring.io/spring-boot/reference/data/nosql.html#data.nosql.redis)
+
+开发环境可直接打开后端的 `/swagger-ui.html`，OpenAPI JSON 位于 `/v3/api-docs`。当前使用 Spring Security 的临时用户 `user` 和启动日志中生成的密码。部署时通过 `SPRING_PROFILES_ACTIVE` 选择部署环境的 profile，Springdoc 只在 `dev` 下启用。 [Spring Boot 默认安全配置](https://docs.spring.io/spring-boot/reference/web/spring-security.html)
+
+| 命令 | 用途 |
+| --- | --- |
+| `./mvnw -B -ntp verify` | 构建整个后端并执行 Maven 验证 |
+| `java -jar target/hoshi-app-0.0.1-SNAPSHOT.jar` | 从 `backend/hoshi-app/` 运行打包后的应用 |
+
+### OpenAPI 注解
+
+优先由 Springdoc 从 Java 类型、Spring MVC 映射和 Bean Validation 约束推断文档。只有字段单位、业务含义或特殊示例无法推断时，才使用一个文档注解补充。字段类型、必填性和长度等已有信息由代码和校验约束统一表达。 [Springdoc 文档](https://springdoc.org/)
 
 ## 共享容器
 
@@ -43,7 +60,7 @@
 | RustFS S3 API | `http://127.0.0.1:9000` | `RUSTFS_PORT` | 共享 `.env` 的 `RUSTFS_ACCESS_KEY` 和 `RUSTFS_SECRET_KEY` |
 | RustFS 控制台 | `http://127.0.0.1:9001` | `RUSTFS_CONSOLE_PORT` | 同一组 RustFS 凭据 |
 
-本机连接凭据保留在本地环境配置中。Hoshi 的 S3 客户端使用 RustFS 的 S3 API 地址，控制台地址用于人工管理。 [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3)
+本机连接凭据保留在本地环境配置中。RustFS 的 S3 API 地址用于应用接入，控制台地址用于人工管理。 [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3)
 
 ## Hoshi 数据库
 
@@ -51,7 +68,9 @@
 
 管理员账号属于 Hoshi 应用。维护者通过数据库操作开通该身份，具体操作随认证模块确定。
 
-创建数据库后，应用表结构由 `backend/migrations/` 中的版本化 SQL 迁移管理，使用 Goose 执行。 [Goose 文档](https://pressly.github.io/goose/)
+Flyway 使用应用数据源，在启动时校验并执行 `backend/hoshi-app/src/main/resources/db/migration/` 中的版本化 SQL。脚本使用 `V<版本>__<说明>.sql` 命名。已有旧迁移或业务表的库，先核对 schema 和迁移历史，再确定 Flyway 接入方式。 [Spring Boot 的 Flyway 集成](https://docs.spring.io/spring-boot/how-to/data-initialization.html#howto.data-initialization.migration-tool.flyway)
+
+需要跨多次读写保持原子性的业务操作，在 Spring 应用服务方法上用 `@Transactional` 定义事务边界，所属 Mapper 通过同一个应用数据源参与事务。
 
 ## Git 与持续集成
 
