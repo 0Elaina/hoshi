@@ -1,0 +1,48 @@
+server:
+  address: 127.0.0.1
+  port: 8080
+
+spring:
+  application:
+    name: hoshi
+  profiles:
+    active: dev
+  flyway:
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: "${HOSHI_REDIS_HOST:127.0.0.1}"
+      port: "${HOSHI_REDIS_PORT:6379}"
+      password: "${HOSHI_REDIS_PASSWORD:}"
+
+logging:
+  file:
+    name: "${HOSHI_LOG_FILE:logs/hoshi.log}"
+  pattern:
+    correlation: "[requestId=%X{requestId:-}] "
+  logback:
+    rollingpolicy:
+      file-name-pattern: "${logging.file.name}.%d{yyyy-MM-dd}.%i.gz"
+      max-file-size: 20MB
+      max-history: 14
+      total-size-cap: 1GB
+
+springdoc:
+  paths-to-match: "/api/v1/**"
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+    disable-swagger-default-url: true
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
