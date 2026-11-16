@@ -1,0 +1,1 @@
+"""Hoshi backend application."""

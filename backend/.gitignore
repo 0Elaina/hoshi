@@ -1,0 +1,8 @@
+/.env
+/.env.*
+!/.env.example
+/.venv/
+/.ruff_cache/
+/dist/
+__pycache__/
+*.py[cod]
