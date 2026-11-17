@@ -6,6 +6,7 @@ from sqlalchemy.pool import NullPool
 
 from hoshi.core.config import Settings
 from hoshi.db.base import Base
+from hoshi.modules.user.models import UserAccount  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
@@ -36,7 +37,7 @@ def run_migrations_online(url: URL) -> None:
         engine.dispose()
 
 
-database_url = Settings().database_url()
+database_url = Settings().database_url()  # pyright: ignore
 if context.is_offline_mode():
     run_migrations_offline(database_url)
 else:

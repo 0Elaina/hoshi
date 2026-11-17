@@ -72,7 +72,37 @@ Hoshi 使用共享 Redis 的 DB 0，业务键以 `hoshi:` 开头。FastAPI 为�
 
 搭建环境时，维护者先使用有建库权限的现有 PostgreSQL 角色连接共享实例，检查 `hoshi` 是否已存在。缺失时只创建 `hoshi` 这一个数据库，所有者使用现有的 `POSTGRES_USER` 对应角色。后端连接配置中的数据库名填写 `hoshi`，登录凭据沿用共享实例的现有账号。 [PostgreSQL 16 建库文档](https://www.postgresql.org/docs/16/sql-createdatabase.html)
 
-管理员账号属于 Hoshi 应用。维护者通过数据库操作开通该身份，具体操作随认证模块确定。
+管理员账号属于 Hoshi 应用，由维护者通过命令行哈希脚本与数据库写入开通：
+
+### 手工开通管理员账号
+
+1. 在 `backend/` 运行密码哈希脚本，按提示输入一次原始密码，复制标准输出的整行 Argon2 哈希：
+
+```bash
+uv run --locked python scripts/hash_password.py
+```
+
+2. 连接 `hoshi` 数据库执行 `INSERT` 开通账号。`username` 使用 3–32 位小写 ASCII 字母、数字或下划线，`nickname` 去首尾空白后为 1–32 个字符，`account_type` 与 `role` 均填 `admin`，`status` 填 `active`，省略 `id`、`created_at` 与 `updated_at` 由数据库生成：
+
+```sql
+INSERT INTO user_accounts (
+    username,
+    nickname,
+    password_hash,
+    account_type,
+    role,
+    status
+)
+VALUES (
+    '<username>',
+    '<nickname>',
+    '<脚本输出的完整 Argon2 哈希>',
+    'admin',
+    'admin',
+    'active'
+)
+RETURNING id, username, account_type, role, status, created_at, updated_at;
+```
 
 接入 Alembic 前，用 PostgreSQL 客户端只读核对 `hoshi` 的表清单。本项目使用默认的 `public` schema，在 `psql` 中可用 `\dt public.*` 查看业务表及 `flyway_schema_history`。发现已有表或旧迁移历史时，先核对实际表结构和历史，再确定接入方式。 [psql 命令](https://www.postgresql.org/docs/16/app-psql.html)
 

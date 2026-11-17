@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.163.1",
     "fastapi-pagination[sqlalchemy]>=0.16.2,<0.17",
     "psycopg[binary]>=3.3,<4",
+    "pwdlib[argon2]>=0.4.2",
     "pydantic>=2,<3",
     "pydantic-settings>=2,<3",
     "redis>=8.1,<9",
