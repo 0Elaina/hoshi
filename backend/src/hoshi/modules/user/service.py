@@ -1,35 +1,47 @@
 from fastapi.concurrency import run_in_threadpool
+from pwdlib import PasswordHash
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import hoshi.modules.user.repository as user_repository
+from hoshi.core.security import get_dummy_hash
 from hoshi.modules.auth.api_code import AuthApiCode
 from hoshi.modules.auth.enums import AccountRole, AccountStatus, AccountType
 from hoshi.modules.auth.schemas import AuthenticatedAccount
-from hoshi.modules.auth.service import PASSWORD_HASH
+from hoshi.modules.user.repository import UserRepository
 from hoshi.shared.http.exception import BusinessException
 
-_DUMMY_HASH = PASSWORD_HASH.hash("dummy")
+_DUMMY_HASH = get_dummy_hash()
 
 
-async def authenticate(
-    session: AsyncSession, username: str, password: str
-) -> AuthenticatedAccount:
-    """认证账号"""
+class AccountAuthenticateService:
+    def __init__(
+        self,
+        session: AsyncSession,
+        password_encoder: PasswordHash,
+        user_repository: UserRepository,
+    ) -> None:
+        self.session = session
+        self.password_encoder = password_encoder
+        self.user_repository = user_repository
 
-    account = await user_repository.find_account_by_username(session, username)
-    if account is None:
-        _ = await run_in_threadpool(PASSWORD_HASH.verify, password, _DUMMY_HASH)
-        raise BusinessException(AuthApiCode.INVALID_CREDENTIALS)
+    async def authenticate(self, username: str, password: str) -> AuthenticatedAccount:
+        """认证账号"""
 
-    if not await run_in_threadpool(
-        PASSWORD_HASH.verify, password, account.password_hash
-    ):
-        raise BusinessException(AuthApiCode.INVALID_CREDENTIALS)
+        account = await self.user_repository.find_account_by_username(username)
+        if account is None:
+            _ = await run_in_threadpool(
+                self.password_encoder.verify, password, _DUMMY_HASH
+            )
+            raise BusinessException(AuthApiCode.INVALID_CREDENTIALS)
 
-    if account.status != AccountStatus.ACTIVE:
-        raise BusinessException(AuthApiCode.INVALID_CREDENTIALS)
-    return AuthenticatedAccount(
-        id=account.id,
-        role=AccountRole(account.role),
-        account_type=AccountType(account.account_type),
-    )
+        if not await run_in_threadpool(
+            self.password_encoder.verify, password, account.password_hash
+        ):
+            raise BusinessException(AuthApiCode.INVALID_CREDENTIALS)
+
+        if account.status != AccountStatus.ACTIVE:
+            raise BusinessException(AuthApiCode.INVALID_CREDENTIALS)
+        return AuthenticatedAccount(
+            id=account.id,
+            role=AccountRole(account.role),
+            account_type=AccountType(account.account_type),
+        )
