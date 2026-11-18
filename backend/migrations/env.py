@@ -6,6 +6,7 @@ from sqlalchemy.pool import NullPool
 
 from hoshi.core.config import Settings
 from hoshi.db.base import Base
+from hoshi.modules.auth.models import AuthSession  # noqa: F401
 from hoshi.modules.user.models import UserAccount  # noqa: F401
 
 config = context.config
