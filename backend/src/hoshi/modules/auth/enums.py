@@ -16,6 +16,11 @@ class AccountStatus(StrEnum):
     DISABLED = "disabled"
 
 
+class TokenType(StrEnum):
+    ACCESS = "access"
+    REFRESH = "refresh"
+
+
 ROLES_BY_ACCOUNT_TYPE: dict[AccountType, frozenset[AccountRole]] = {
     AccountType.ADMIN: frozenset({AccountRole.ADMIN}),
     AccountType.USER: frozenset({AccountRole.USER}),
