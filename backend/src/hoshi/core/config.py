@@ -16,11 +16,16 @@ class Settings(BaseSettings):
     )
 
     app_env: Literal["development", "production"] = "production"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_file: str = Field(default="logs/hoshi.log", min_length=1)
     db_host: str = Field(default="127.0.0.1", min_length=1)
     db_port: int = Field(default=5432, ge=1, le=65535)
     db_name: str = Field(default="hoshi", min_length=1)
     db_user: str = Field(min_length=1)
     db_password: SecretStr = Field(min_length=1)
+
+    # 同源
+    admin_origin: str = Field(default="http://127.0.0.1:5173", min_length=1)
 
     redis_host: str = Field(default="127.0.0.1", min_length=1)
     redis_port: int = Field(default=6379, ge=1, le=65535)

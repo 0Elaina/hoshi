@@ -3,7 +3,7 @@ from pwdlib import PasswordHash
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hoshi.core.security import get_dummy_hash
-from hoshi.modules.auth.api_code import AuthApiCode
+from hoshi.modules.auth.constants import AuthApiCode
 from hoshi.modules.auth.enums import AccountRole, AccountStatus, AccountType
 from hoshi.modules.auth.schemas import AuthenticatedAccount
 from hoshi.modules.user.repository import UserRepository

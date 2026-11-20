@@ -4,7 +4,7 @@ from typing import Any
 import jwt
 
 from hoshi.core.config import Settings
-from hoshi.modules.auth.api_code import AuthApiCode
+from hoshi.modules.auth.constants import AuthApiCode
 from hoshi.modules.auth.enums import AccountType, TokenType
 from hoshi.modules.auth.schemas import (
     AccessTokenPayload,
