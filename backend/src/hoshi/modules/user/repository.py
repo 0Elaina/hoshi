@@ -17,3 +17,13 @@ class UserRepository:
             )
         ).scalar_one_or_none()
         return result
+
+    async def find_account_by_id(self, account_id: int) -> UserAccount | None:
+        """根据用户ID查找用户账号"""
+
+        result = (
+            await self.session.execute(
+                select(UserAccount).where(UserAccount.id == account_id)
+            )
+        ).scalar_one_or_none()
+        return result
