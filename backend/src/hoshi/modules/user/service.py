@@ -45,3 +45,16 @@ class AccountAuthenticateService:
             role=AccountRole(account.role),
             account_type=AccountType(account.account_type),
         )
+
+    async def get_active_account(self, account_id: int) -> AuthenticatedAccount | None:
+        """查询可用的账号"""
+
+        account = await self.user_repository.find_account_by_id(account_id)
+        if account is None or AccountStatus.ACTIVE != account.status:
+            # 不抛错, 交给调用方处理 (撤销会话)
+            return None
+        return AuthenticatedAccount(
+            id=account_id,
+            role=AccountRole(account.role),
+            account_type=AccountType(account.account_type),
+        )

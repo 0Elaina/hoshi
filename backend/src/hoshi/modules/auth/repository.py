@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hoshi.modules.auth.models import AuthSession
@@ -23,3 +24,29 @@ class AuthSessionRepository:
         self.session.add(auth_session)
         await self.session.flush()
         return auth_session
+
+    async def get_by_id_for_update(self, sid: str) -> AuthSession | None:
+        """获取认证会话并加锁"""
+
+        result = (
+            await self.session.execute(
+                select(AuthSession).where(AuthSession.id == sid).with_for_update()
+            )
+        ).scalar_one_or_none()
+        return result
+
+    async def rotate(
+        self, auth_session: AuthSession, *, refresh_jti: str, now: datetime
+    ) -> None:
+        """轮换刷新会话"""
+
+        auth_session.refresh_jti = refresh_jti
+        auth_session.updated_at = now
+        await self.session.flush()
+
+    async def revoke(self, auth_session: AuthSession, *, now: datetime) -> None:
+        """撤销会话"""
+
+        auth_session.revoked_at = now
+        auth_session.updated_at = now
+        await self.session.flush()

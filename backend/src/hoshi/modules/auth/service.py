@@ -23,6 +23,10 @@ class AccountAuthenticator(Protocol):
         self, username: str, password: str
     ) -> AuthenticatedAccount: ...
 
+    async def get_active_account(
+        self, account_id: int
+    ) -> AuthenticatedAccount | None: ...
+
 
 class AuthService:
     def __init__(
