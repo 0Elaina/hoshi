@@ -11,13 +11,13 @@ class FieldError(BaseModel):
 
 
 class ApiResponse[T](BaseModel):
-    data: T
+    data: T | None
     code: str
     message: str
     errors: list[FieldError] = Field(default_factory=list)
 
     @classmethod
-    def success(cls, data: T) -> Self:
+    def success(cls, data: T | None = None) -> Self:
         return cls(
             data=data,
             code=CommonApiCode.SUCCESS.code,

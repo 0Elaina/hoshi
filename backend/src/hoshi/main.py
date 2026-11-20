@@ -1,7 +1,7 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from redis.asyncio import Redis
 
 from hoshi.api.handlers import register_exception_handlers
@@ -11,6 +11,18 @@ from hoshi.core.logging import configure_logging
 from hoshi.db.session import create_db_engine, create_session_factory
 from hoshi.modules.auth.jwt import JwtService
 from hoshi.modules.auth.rate_limit import LoginRateLimiter
+
+AUTH_NO_STORE_PREFIXS = ("/api/v1/admin/auth", "/api/v1/auth/")
+
+
+async def add_auth_no_store(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """为认证接口响应统一设置 Cache-Control: no-store"""
+    response = await call_next(request)
+    if request.url.path.startswith(AUTH_NO_STORE_PREFIXS):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def create_app() -> FastAPI:
@@ -48,6 +60,9 @@ def create_app() -> FastAPI:
         swagger_ui_oauth2_redirect_url=None,
     )
     register_exception_handlers(app)
+
+    app.middleware("http")(add_auth_no_store)
+
     app.state.settings = settings
     app.state.jwt_service = jwt_service
     app.include_router(admin_api, prefix="/api/v1")

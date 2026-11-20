@@ -1,12 +1,14 @@
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from typing import cast
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.utils import is_body_allowed_for_status_code
 from starlette.exceptions import HTTPException
+from starlette.types import ExceptionHandler
 
 from hoshi.shared.http.api_code import ApiCode, CommonApiCode
 from hoshi.shared.http.exception import BusinessException
@@ -22,9 +24,15 @@ HTTP_ERROR_CODES: dict[int, ApiCode] = {
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(BusinessException, handle_business_exception)
-    app.add_exception_handler(RequestValidationError, handle_request_validation)
-    app.add_exception_handler(HTTPException, handle_http_exception)
+    app.add_exception_handler(
+        BusinessException, cast(ExceptionHandler, handle_business_exception)
+    )
+    app.add_exception_handler(
+        RequestValidationError, cast(ExceptionHandler, handle_request_validation)
+    )
+    app.add_exception_handler(
+        HTTPException, cast(ExceptionHandler, handle_http_exception)
+    )
     app.add_exception_handler(Exception, handle_unexpected_exception)
 
 
@@ -68,8 +76,8 @@ async def handle_business_exception(
     api_code = exc.api_code
     if api_code.http_status >= status.HTTP_500_INTERNAL_SERVER_ERROR:
         logger.error("Business operation failed with %s", api_code.code, exc_info=exc)
-        return _error_response(api_code)
-    return _error_response(api_code, message=exc.message)
+        return _error_response(api_code, headers=exc.headers)
+    return _error_response(api_code, message=exc.message, headers=exc.headers)
 
 
 async def handle_http_exception(_request: Request, exc: HTTPException) -> Response:
