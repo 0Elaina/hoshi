@@ -83,7 +83,7 @@ class LoginRateLimiter:
         retry_after = int(raw_result)
         if retry_after > 0:
             retry_after = max(retry_after, 1)
-            logger.info(
+            logger.warning(
                 "登录触发限流: %s (%s), %ss 后重试", username, client_ip, retry_after
             )
             raise BusinessException(

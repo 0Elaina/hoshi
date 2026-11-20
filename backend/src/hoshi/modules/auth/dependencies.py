@@ -24,7 +24,7 @@ def verify_admin_origin(
     """同源校验"""
 
     if origin != settings.admin_origin:
-        logger.info("管理员登录来源校验失败: origin=%s", origin)
+        logger.warning("管理员登录来源校验失败: origin=%s", origin)
         raise BusinessException(AuthApiCode.INVALID_AUTH_ORIGIN)
 
 
