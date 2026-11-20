@@ -4,5 +4,7 @@
 /.venv/
 /.ruff_cache/
 /dist/
+/logs/
+*.log*
 __pycache__/
 *.py[cod]
