@@ -24,20 +24,39 @@
 | 环境变量 | 未配置时 | 用途 |
 | --- | --- | --- |
 | `HOSHI_APP_ENV` | `production` | 设为 `development` 时开放 OpenAPI 和 Swagger UI |
+| `HOSHI_LOG_LEVEL` | `INFO` | 应用与 Uvicorn 日志级别（`DEBUG` / `INFO` / `WARNING` / `ERROR` / `CRITICAL`） |
+| `HOSHI_LOG_FILE` | `logs/hoshi.log` | 按天滚动日志文件路径（相对于工作目录） |
 | `HOSHI_DB_HOST` | `127.0.0.1` | 共享 PostgreSQL 的宿主机地址 |
 | `HOSHI_DB_PORT` | `5432` | 共享 PostgreSQL 的宿主机端口 |
 | `HOSHI_DB_NAME` | `hoshi` | Hoshi 数据库名 |
 | `HOSHI_DB_USER` | 必填 | 共享 PostgreSQL 用户 |
 | `HOSHI_DB_PASSWORD` | 必填 | 共享 PostgreSQL 密码 |
+| `HOSHI_ADMIN_ORIGIN` | `http://127.0.0.1:5173` | 管理端浏览器 Origin，生产环境须配置为实际 HTTPS Origin |
 | `HOSHI_REDIS_HOST` | `127.0.0.1` | 共享 Redis 的宿主机地址 |
 | `HOSHI_REDIS_PORT` | `6379` | 共享 Redis 的宿主机端口 |
 | `HOSHI_REDIS_PASSWORD` | 空 | 本机共享实例使用 `REDIS_PASSWORD` |
+| `HOSHI_JWT_SECRET` | 必填 | 标准 Base64 编码的 HS256 密钥，解码后不少于 32 字节 |
+| `HOSHI_JWT_ISSUER` | `hoshi` | 签发与验签使用的 JWT `iss` 声明 |
+| `HOSHI_JWT_ACCESS_TTL` | `300` | 访问令牌有效期（单位：秒） |
+| `HOSHI_JWT_ADMIN_REFRESH_TTL` | `86400` | 管理端刷新令牌与会话有效期（单位：秒） |
+| `HOSHI_JWT_USER_REFRESH_TTL` | `2592000` | 用户端刷新令牌与会话有效期（单位：秒） |
+
+首次填写 `.env` 时，可用以下命令生成符合长度要求的 `HOSHI_JWT_SECRET`：
+
+```bash
+openssl rand -base64 32
+```
+
+启动后端前先确认共享 PostgreSQL 与 Redis 已运行，并在 `backend/` 应用数据库迁移：
 
 ```bash
 uv python install
 uv sync --locked
+uv run --locked alembic upgrade head
 uv run --locked uvicorn hoshi.main:create_app --factory --host 127.0.0.1 --port 8080 --reload
 ```
+
+同时启动管理端开发服务后，可通过 Vite 同源代理（`http://127.0.0.1:5173/api/v1/admin/auth/login`）联调管理端登录；用 `curl` 直接调试时需显式携带 `Origin: http://127.0.0.1:5173` 请求头。
 
 开发环境的 Swagger UI 位于 `/api/docs`，OpenAPI JSON 位于 `/api/openapi.json`。管理端开发服务启动后，也可经 `http://127.0.0.1:5173/api/docs` 打开 Swagger UI。访问未注册的路径可检查 `404 / ROUTE_NOT_FOUND` 响应。以 `HOSHI_APP_ENV=production` 重启时，两个文档路径均返回 `404`。 [FastAPI OpenAPI URL](https://fastapi.tiangolo.com/tutorial/metadata/#openapi-url) · [Uvicorn 配置](https://www.uvicorn.org/settings/)
 
