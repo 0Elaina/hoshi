@@ -68,13 +68,17 @@ uv run --locked uvicorn hoshi.main:create_app --factory --host 127.0.0.1 --port 
 | `uv run --locked ruff check` | 执行后端静态检查 |
 | `uv run --locked ruff format --check` | 检查后端代码格式 |
 
+### AI 与向量服务配置约定
+
+后续接入 LangChain、LangGraph 与 Qdrant 模块时，新增环境变量继续沿用 `HOSHI_` 前缀并在 `backend/src/hoshi/core/config.py` 中声明。Qdrant 优先连接本机共享实例（见下文 [共享容器](#共享容器)），OpenAI 兼容模型与 Embedding 服务通过环境变量配置基址、密钥与默认模型名称，不将模型密钥写入仓库。
+
 ### OpenAPI 契约
 
 使用 FastAPI 路由和 Pydantic 请求、响应模型生成 OpenAPI。字段类型、必填性和长度由契约本身表达。字段单位、业务含义和特殊示例可在模型字段或路由上补充。 [FastAPI 响应模型](https://fastapi.tiangolo.com/tutorial/response-model/)
 
 ## 共享容器
 
-本机各项目的共享容器由 `/home/nep/01-Own/infra` 统一配置。Hoshi 复用该目录中已有的 `postgres`、`redis` 和 `rustfs` 服务。 [共享 Compose 配置](../../../../infra/compose.yaml)
+本机各项目的共享容器由 `/home/nep/01-Own/infra` 统一配置。Hoshi 复用该目录中已有的 `postgres`、`redis`、`qdrant`、`rustfs` 及按需接入的 `rabbitmq` 服务。 [共享 Compose 配置](../../../../infra/compose.yaml)
 
 下表列出 Compose 的默认宿主机连接地址。实际连接时，先查看 `/home/nep/01-Own/infra/.env` 中的 `BIND_IP` 和对应端口变量。如果启动 Compose 时通过 Shell 环境或 `--env-file` 覆盖了配置，以该次启动解析出的端口映射为准。 [Docker Compose 变量插值规则](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/)
 
@@ -82,10 +86,14 @@ uv run --locked uvicorn hoshi.main:create_app --factory --host 127.0.0.1 --port 
 | --- | --- | --- | --- |
 | PostgreSQL 16 | `127.0.0.1:5432` | `POSTGRES_PORT` | 共享 `.env` 的 `POSTGRES_USER` 和 `POSTGRES_PASSWORD` |
 | Redis 7 | `127.0.0.1:6379` | `REDIS_PORT` | 共享 `.env` 的 `REDIS_PASSWORD` |
+| Qdrant HTTP API | `http://127.0.0.1:6333` | `QDRANT_PORT` | 本地共享实例未启用 API Key |
+| Qdrant gRPC | `127.0.0.1:6334` | `QDRANT_GRPC_PORT` | 本地共享实例未启用 API Key |
 | RustFS S3 API | `http://127.0.0.1:9000` | `RUSTFS_PORT` | 共享 `.env` 的 `RUSTFS_ACCESS_KEY` 和 `RUSTFS_SECRET_KEY` |
 | RustFS 控制台 | `http://127.0.0.1:9001` | `RUSTFS_CONSOLE_PORT` | 同一组 RustFS 凭据 |
+| RabbitMQ AMQP | `127.0.0.1:5672` | `RABBITMQ_PORT` | 共享 `.env` 的 `RABBITMQ_DEFAULT_USER` 和 `RABBITMQ_DEFAULT_PASS` |
+| RabbitMQ 管理台 | `http://127.0.0.1:15672` | `RABBITMQ_MGMT_PORT` | 同一组 RabbitMQ 凭据 |
 
-本机连接凭据保留在本地环境配置中。RustFS 的 S3 API 地址用于应用接入，控制台地址用于人工管理。 [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3)
+本机连接凭据保留在本地环境配置中。RustFS 的 S3 API 地址用于应用接入，控制台地址用于人工管理。Qdrant 接入时通过集合命名前缀及 `user_id`、`character_id` Payload 字段完成逻辑隔离。 [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3) · [Qdrant 文档](https://qdrant.tech/documentation/)
 
 Hoshi 使用共享 Redis 的 DB 0，业务键以 `hoshi:` 开头。FastAPI 为每个应用进程管理一个异步 Redis 客户端，连接在首次执行 Redis 命令时建立。HTTP 路由通过 `get_redis` 依赖取得客户端。 [redis-py 异步客户端](https://redis.io/docs/latest/develop/clients/redis-py/async/) · [Redis SELECT](https://redis.io/docs/latest/commands/select/)
 
