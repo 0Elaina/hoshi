@@ -16,6 +16,9 @@ class AuthApiCode:
     INVALID_AUTH_ORIGIN = ApiCode(
         status.HTTP_403_FORBIDDEN, "INVALID_AUTH_ORIGIN", "请求来源不受信任"
     )
+    ACCESS_DENIED = ApiCode(
+        status.HTTP_403_FORBIDDEN, "ACCESS_DENIED", "无权访问当前入口"
+    )
 
     LOGIN_RATE_LIMITED = ApiCode(
         status.HTTP_429_TOO_MANY_REQUESTS,
