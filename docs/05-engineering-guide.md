@@ -58,6 +58,8 @@ uv run --locked uvicorn hoshi.main:create_app --factory --host 127.0.0.1 --port 
 
 同时启动管理端开发服务后，可通过 Vite 同源代理（`http://127.0.0.1:5173/api/v1/admin/auth/login`、`/refresh`、`/logout`）联调管理端登录、续签与登出；用 `curl` 直接调试时需显式携带 `Origin: http://127.0.0.1:5173` 请求头，并配合 `-c` / `-b` 传递 `hoshi_admin_refresh` Cookie。
 
+调试受保护的管理端接口（如 `GET /api/v1/admin/accounts/me`）时，在请求头携带登录或刷新获得的访问令牌：`Authorization: Bearer <accessToken>`。后续新增管理端业务路由须统一挂载到 `hoshi.api.v1.admin` 中的 `protected_admin_api`，以自动继承 Bearer 访问令牌校验与 `AccountType.ADMIN` 入口检查；需要读取身份载荷时注入 `AdminAccountDependency`。
+
 管理端接入 `/refresh` 时，客户端须对同一 Cookie 下的并发刷新请求做合并/排队（Single-Flight）：后端每次刷新都会轮换 `refresh_jti`，旧刷新令牌被重放会触发整条会话撤销；若刷新响应在客户端保存前丢失，后续续签也会失败并要求重新登录。
 
 开发环境的 Swagger UI 位于 `/api/docs`，OpenAPI JSON 位于 `/api/openapi.json`。管理端开发服务启动后，也可经 `http://127.0.0.1:5173/api/docs` 打开 Swagger UI。访问未注册的路径可检查 `404 / ROUTE_NOT_FOUND` 响应。以 `HOSHI_APP_ENV=production` 重启时，两个文档路径均返回 `404`。 [FastAPI OpenAPI URL](https://fastapi.tiangolo.com/tutorial/metadata/#openapi-url) · [Uvicorn 配置](https://www.uvicorn.org/settings/)
