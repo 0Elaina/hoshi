@@ -81,6 +81,7 @@ flowchart LR
 ## API 约定
 
 - 业务路由使用 `/api/v1` 前缀。JSON 业务响应包含 `data`、`code`、`message`、`errors`。HTTP 状态码反映操作结果，成功码为 `SUCCESS`，无数据的成功响应和错误响应使用 `data: null`。`errors` 在字段校验失败时包含 `field` 和 `message`，没有字段明细时为 `[]`。 [全局错误码](04-api-design/00-error-codes.md)
+- 管理端受保护业务路由统一注册到 `hoshi.api.v1.admin` 的 `protected_admin_api`，通过 `auth` 模块的 `require_admin_account` 依赖在进程内完成 Bearer 访问令牌验签与 `AccountType.ADMIN` 入口检查，不访问数据库或 Redis；需要校验实时账号状态或读取最新资料的接口（如 `GET /api/v1/admin/accounts/me`）由所属业务用例显式查询数据库。
 - 管理端页码列表使用查询参数 `page` 和 `pageSize`，默认值分别为 `1` 和 `20`，页大小上限为 `100`。路由通过 `PageParams` 绑定 `fastapi-pagination` 的分页参数模型。空值、非整数和超出范围的值返回 `400 / INVALID_ARGUMENT`。响应 `data` 使用 `PageResult[T]`，包含数组 `items`、总条数 `total` 和实际使用的 `page`、`pageSize`。列表为空时 `items` 为 `[]`。仓储为查询指定唯一、稳定的排序，在用例事务内将分页参数显式传给 SQLAlchemy 集成的 `apaginate`。分页库基于该查询计算总数并读取当前页。 [fastapi-pagination SQLAlchemy 集成](https://uriyyo-fastapi-pagination.netlify.app/integrations/sqlalchemy/paginate/) · [PostgreSQL 16 LIMIT 和 OFFSET](https://www.postgresql.org/docs/16/queries-limit.html)
 
 ## 前端请求约定
