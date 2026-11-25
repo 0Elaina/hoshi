@@ -16,7 +16,7 @@ Hoshi 是个人独立开发、长期维护、面向真实用户的多角色 AI �
 - **LangChain 与 LangGraph**。LangChain 提供 OpenAI 兼容多模型接入（支持按场景配置对话模型与 Embedding 模型）、统一消息内容块与工具调用抽象；LangGraph 编排有状态的陪伴对话工作流、情绪/关系状态流转与工具决策循环，并复用 PostgreSQL 16 作为 Checkpointer 持久化图运行状态与短期工作记忆。 [LangChain 文档](https://python.langchain.com/docs/introduction/) · [LangGraph 文档](https://langchain-ai.github.io/langgraph/)
 - **Qdrant 向量数据库**。本地复用共享 Qdrant 服务，按 `user_id`、`character_id` 与记忆类型隔离存储对话提炼出的长期情景记忆、用户事实与角色设定集（Lore），结合语义相似度与时间衰减进行召回。 [Qdrant 文档](https://qdrant.tech/documentation/)
 - **PostgreSQL 16、SQLAlchemy、Psycopg 3、Alembic**。SQLAlchemy 异步 ORM 与 Psycopg 负责业务关系数据（账号、会话、角色配置、展示消息、关系状态等）访问，Alembic 通过独立命令执行版本化迁移。表结构、约束和索引由迁移定义。 [SQLAlchemy 异步 ORM](https://docs.sqlalchemy.org/en/21/orm/extensions/asyncio.html) · [Alembic 迁移](https://alembic.sqlalchemy.org/en/latest/tutorial.html)
-- **Redis、对象存储与消息队列**。本地复用共享 Redis 7、RustFS 与 RabbitMQ。FastAPI 在应用生命周期内管理一个异步 redis-py 客户端，用于登录限流、流式控制锁与主动关怀防打扰冷却；RustFS S3 客户端随头像及多模态附件业务接入；异步记忆提炼与主动关怀等耗时后台任务按需通过消息队列或调度器解耦执行。 [redis-py 异步客户端](https://redis.io/docs/latest/develop/clients/redis-py/async/) · [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3)
+- **Redis、对象存储与消息队列**。本地复用共享 Redis 7、RustFS 与 RabbitMQ。FastAPI 在应用生命周期内管理一个共享异步 redis-py 客户端，用于登录限流、流式控制锁与主动关怀防打扰冷却；同时在应用生命周期内管理一个共享异步 RustFS S3 客户端（`aiobotocore`，`s3v4` 签名与 Path 风格寻址），对接私有桶 `hoshi-media`，具体对象读写随头像及多模态业务模块接入；异步记忆提炼、媒体处理与主动关怀等耗时后台任务按需通过消息队列或调度器解耦执行。 [redis-py 异步客户端](https://redis.io/docs/latest/develop/clients/redis-py/async/) · [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3) · [aiobotocore 文档](https://aiobotocore.aio-libs.org/en/stable/)
 
 ### 实时通信
 
@@ -50,7 +50,7 @@ flowchart LR
     Agent -. LangGraph Checkpointer .-> Postgres
     Agent -. 长期记忆 / 设定集检索 .-> Qdrant
     Backend -->|redis-py| Redis
-    Backend -. S3 API，待业务接入 .-> RustFS
+    Backend -->|aiobotocore / S3 API| RustFS
     Backend -. 异步记忆 / 主动关怀，按需接入 .-> RabbitMQ
 ```
 
@@ -65,6 +65,7 @@ flowchart LR
 | `backend/src/hoshi/core/` | 应用配置和数据源连接配置 |
 | `backend/src/hoshi/api/` | FastAPI 集成、全局异常处理和请求依赖 |
 | `backend/src/hoshi/db/` | SQLAlchemy 声明式基类、引擎和会话工厂 |
+| `backend/src/hoshi/infra/` | 外部基础设施客户端装配与生命周期管理（如 RustFS 对象存储） |
 | `backend/src/hoshi/shared/http/` | 各业务模块共享的 HTTP 响应、错误码、业务异常和分页契约 |
 | `backend/src/hoshi/shared/utils/` | 各业务模块实际复用的通用工具 |
 | `backend/src/hoshi/modules/` | 随功能接入建立的业务模块 |
@@ -89,3 +90,8 @@ flowchart LR
 - 管理端通过 `@hoshi/api-client` 的 `createRequest` 创建请求实例，用户端接入时创建自己的实例。业务接口使用 `request<T>({ method: "GET", url, params, signal })`。`url` 相对于实例的 API 基址，成功返回业务 `data`，无数据的成功响应使用 `request<null>`。共享包校验 `data`、`code` 和 `message`，接口可传入 Zod `schema` 进一步校验数据。 [Axios 实例](https://axios.rest/pages/advanced/create-an-instance) · [Zod Schema](https://zod.dev/api)
 - 请求失败通过 `RequestError` 提供失败类型，并在适用时保留 HTTP 状态、业务码和公开消息。管理端使用 TanStack Query 的缓存级回调统一提示首次查询和提交失败。取消与已有数据的后台刷新失败保持安静。表单设置 `meta: { errorFeedback: "local" }` 后可自行展示字段反馈。 [QueryCache](https://tanstack.com/query/latest/docs/reference/QueryCache) · [MutationCache](https://tanstack.com/query/latest/docs/reference/MutationCache)
 - 查询函数将 TanStack Query 提供的 `signal` 传给 `request`。管理端查询在网络错误、超时或 HTTP `5xx` 时最多重试一次，提交默认执行一次。缓存键、时效和失效由所属业务模块管理。 [查询取消](https://tanstack.com/query/latest/docs/framework/react/guides/query-cancellation) · [查询重试](https://tanstack.com/query/latest/docs/framework/react/guides/query-retries)
+
+## 对象存储与多媒体边界
+
+- **共享底座与业务隔离**。管理端与用户端共享同一个 `hoshi-media` 私有桶与 FastAPI 进程内 RustFS 客户端（`hoshi.infra.object_storage`）。对象键前缀、上传授权及读取策略由各自业务模块依据账号身份、媒体归属及角色发布状态决定；数据库仅持久化稳定的对象键或媒体 ID，私有媒体读取时在业务鉴权后生成短期签名 URL。 [RustFS 私有访问与签名链接](https://docs.rustfs.com/en/administration/protocols/s3) · [Boto3 签名 URL](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-presigned-urls.html)
+- **读写方式与并发切换**。用户头像、角色头像等小文件经业务 API 校验类型、大小与内容后由服务端写入 RustFS；较大的立绘、音频或附件按需采用短期签名直传并在上传完成后由业务 API 确认引用；已发布官方角色素材的公开分发规则与源媒体私有边界保持分离。更新媒体时每次写入独立对象键，由数据库事务切换当前有效引用，旧对象清理在业务提交后按对应模块策略执行；音频转码或大图衍生等耗时处理后续交由 RabbitMQ 异步执行。
