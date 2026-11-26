@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # Rustfs
     s3_endpoint_url: AnyHttpUrl = AnyHttpUrl("http://127.0.0.1:9000")
     s3_region: str = Field(default="us-east-1", min_length=1)
-    s3_bucket: str = Field(default="hoshi-media", min_length=1)
+    s3_bucket: str = Field(default="hoshi-files", min_length=1)
     s3_access_key: SecretStr | None = None
     s3_secret_key: SecretStr | None = None
 
