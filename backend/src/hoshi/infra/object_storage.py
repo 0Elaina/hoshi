@@ -13,6 +13,8 @@ from hoshi.core.config import Settings
 
 logger = logging.getLogger(__name__)
 
+_NOT_FOUND_ERROR_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+
 
 @dataclass(frozen=True, slots=True)
 class PresignedPut:
@@ -20,6 +22,14 @@ class PresignedPut:
 
     url: str
     headers: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectMetadata:
+    """对象元数据信息"""
+
+    size_bytes: int
+    content_type: str | None
 
 
 class ObjectStorageError(Exception):
@@ -149,7 +159,7 @@ class S3ObjectStorage:
         )
 
     async def presign_get(self, key: str, *, expires_in: int = 300) -> str:
-        """生成对象下载预签名 URL。"""
+        """生成对象下载预签名 URL"""
         # 校验对象键与有效期
         _validate_object_key(key)
         if expires_in <= 0:
@@ -166,3 +176,44 @@ class S3ObjectStorage:
         except (ClientError, BotoCoreError) as exc:
             _raise_storage_error("get_object", exc)
         return url
+
+    async def head(self, key: str) -> ObjectMetadata | None:
+        """获取对象元数据，若对象不存在则返回 None"""
+        # 校验对象键格式
+        _validate_object_key(key)
+
+        # 查询对象元信息，将不存在错误码收敛为 None，其余异常统一包装抛出
+        try:
+            response = await self._client.head_object(Bucket=self._bucket, Key=key)  # pyright: ignore
+        except ClientError as exc:
+            error_code = _extract_client_error_code(exc)
+            if error_code in _NOT_FOUND_ERROR_CODES:
+                return None
+            _raise_storage_error("head_object", exc)
+        except BotoCoreError as exc:
+            _raise_storage_error("head_object", exc)
+
+        # 校验响应中的必需字段（ContentLength）并组装元数据模型
+        content_length = response.get("ContentLength")
+        if content_length is None:
+            logger.error("对象存储响应缺少 ContentLength, operation=head_object")
+            raise ObjectStorageError(
+                "head_object 响应缺少 ContentLength", operation="head_object"
+            )
+        raw_content_type = response.get("ContentType")
+        content_type = str(raw_content_type) if raw_content_type is not None else None
+        return ObjectMetadata(
+            size_bytes=int(content_length),
+            content_type=content_type,
+        )
+
+    async def delete(self, key: str) -> None:
+        """删除指定对象"""
+        # 校验对象键格式
+        _validate_object_key(key)
+
+        # 执行删除请求并统一转换底层异常
+        try:
+            await self._client.delete_object(Bucket=self._bucket, Key=key)  # pyright: ignore
+        except (ClientError, BotoCoreError) as exc:
+            _raise_storage_error("delete_object", exc)
