@@ -47,6 +47,13 @@
 | `HOSHI_S3_PUBLIC_BUCKET` | 空 | 公开桶名称，不可与私有桶同名 |
 | `HOSHI_S3_ACCESS_KEY` | 空 | Hoshi 应用 S3 Access Key（使用 `SecretStr`） |
 | `HOSHI_S3_SECRET_KEY` | 空 | Hoshi 应用 S3 Secret Key（使用 `SecretStr`） |
+| `HOSHI_RABBITMQ_HOST` | 空 | 共享 RabbitMQ 宿主机地址；与用户、密码成组填写，全空时禁用快速唤醒 |
+| `HOSHI_RABBITMQ_PORT` | `5672` | 共享 RabbitMQ AMQP 端口 |
+| `HOSHI_RABBITMQ_USER` | 空 | 共享 RabbitMQ 用户名 |
+| `HOSHI_RABBITMQ_PASSWORD` | 空 | 共享 RabbitMQ 密码（使用 `SecretStr`） |
+| `HOSHI_RABBITMQ_VHOST` | `/` | 共享 RabbitMQ 虚拟主机 |
+| `HOSHI_PUBLIC_MEDIA_BASE_URL` | 空 | 公开媒体根地址（HTTP(S) 根地址，生产环境强制 HTTPS） |
+| `HOSHI_CDN_PURGE_ENABLED` | `false` | 是否为已撤回且删源成功的公开对象登记 CDN 清理任务（启用时须同时配置对象存储与公开媒体根地址） |
 
 首次填写 `.env` 时，可用以下命令生成符合长度要求的 `HOSHI_JWT_SECRET`：
 
@@ -120,6 +127,20 @@ Hoshi 在每套环境使用独立的私有桶与公开桶，由共享 RustFS 管
 - **私有桶 CORS**：由于浏览器直传 `PUT` 携带 `Content-Type` 与 `If-None-Match: *`（非 CORS 安全请求头，会触发 `OPTIONS` 预检），私有桶 CORS 须配置对应前端 Origin，且 `AllowedMethods` 包含 `PUT`、`AllowedHeaders` 显式包含 `Content-Type` 与 `If-None-Match`。
 - **公开桶边界**：Bucket Policy 仅授予对象级匿名 `s3:GetObject`（允许按完整地址 GET/HEAD，禁止列举、上传与删除）；仅接收业务明确获准公开的处理产物，媒体域名回源同样使用该只读入口。
 - **配置与反代约束**：`HOSHI_S3_ENDPOINT_URL`、`HOSHI_S3_PRIVATE_BUCKET`、`HOSHI_S3_PUBLIC_BUCKET`、`HOSHI_S3_ACCESS_KEY` 与 `HOSHI_S3_SECRET_KEY` 须成组填写，全空时禁用存储，部分填写或两桶同名时启动报错。浏览器经反向代理访问 `HOSHI_S3_SIGNING_ENDPOINT_URL` 时，反代须原样保留签名使用的 `Host`、路径与查询串。
+
+### 文件后台 Worker 与 RabbitMQ
+
+文件原件校验、衍生规格生成、撤回删源和分钟维护循环由独立 Worker 进程承载（在 `backend/` 下启动）：
+
+```bash
+uv run --locked python -m hoshi.workers.files
+# 按需指定运行角色（默认 media,cleanup,sweeper 全开）
+uv run --locked python -m hoshi.workers.files --roles media,cleanup,sweeper
+```
+
+- **队列隔离**：按 `HOSHI_APP_ENV` 声明两条 durable 队列：`hoshi.{app_env}.files.media`（`validate_upload`、`generate_variant`）和 `hoshi.{app_env}.files.cleanup`（`cleanup_variant`），上限 `x-max-length=10000`、溢出策略 `reject-publish`，持久化消息体仅含 `{"job_id": <int>}`。
+- **快速路径与补发**：Web 进程以非阻塞方式维护单条 `aio-pika` robust 连接与带发布确认（`publisher_confirms=True`、`mandatory=True`、`on_return_raises=True`）的发布通道，最多 8 个在途后台发布、单次超时 2 秒；Broker 未就绪或容量满时由数据库补发接管。
+- **分钟维护循环**：通过 `SET hoshi:files:sweeper:{app_env}:lock <token> NX EX 55` 抢占自然到期的分钟租约（单轮总预算 30 秒），依次回收超时 `running` 任务、清理超 30 天 `succeeded` 历史、按批补发 MQ 唤醒任务，并直接从 PostgreSQL 批领到期 `purge_variant_cache`（默认每轮最多 30 条去重 URL，单次 10 秒超时 HTTP 清理请求）。
 
 ## Hoshi 数据库
 
