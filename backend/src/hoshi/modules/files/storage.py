@@ -16,7 +16,8 @@ PRIVATE_ASSET_CACHE_CONTROL = "private, max-age=300"
 ORIGINAL_CONTENT_DISPOSITION = "attachment"
 IF_NONE_MATCH_ANY = "*"
 
-_OBJECT_NOT_FOUND_CODES = frozenset({"NoSuchKey", "NotFound", "404"})
+_EXPLICIT_OBJECT_NOT_FOUND_CODES = frozenset({"NoSuchKey"})
+_GENERIC_HEAD_NOT_FOUND_CODES = frozenset({"NotFound", "404"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +68,13 @@ def _is_object_not_found(exc: ClientError, *, allow_generic_404: bool) -> bool:
     if code == "NoSuchBucket" or status_code == 403 or code in {"AccessDenied", "403"}:
         return False
 
-    if code in _OBJECT_NOT_FOUND_CODES:
+    if code in _EXPLICIT_OBJECT_NOT_FOUND_CODES:
         return True
 
-    # HEAD 在已建桶上可能仅返回通用 404
-    return allow_generic_404 and status_code == 404 and not code
+    # HEAD 在已建桶上可能仅返回通用 404，DELETE 不得吞掉通用 404
+    return allow_generic_404 and (
+        code in _GENERIC_HEAD_NOT_FOUND_CODES or (status_code == 404 and not code)
+    )
 
 
 class FileObjectStorage:
