@@ -10,6 +10,7 @@ from hoshi.api.v1.admin import admin_api
 from hoshi.core.config import Settings
 from hoshi.core.logging import configure_logging
 from hoshi.db.session import create_db_engine, create_session_factory
+from hoshi.infra.rabbitmq import RabbitMQFileJobPublisher
 from hoshi.infra.s3 import create_s3_client
 from hoshi.modules.auth.jwt import JwtService
 from hoshi.modules.auth.rate_limit import LoginRateLimiter
@@ -89,6 +90,22 @@ def create_app() -> FastAPI:
                     app.state.s3_client = None
                     app.state.s3_signing_client = None
                     app.state.file_storage = None
+
+                # 按配置启动非阻塞 RabbitMQ 快速唤醒发布器；未配置或暂不可用时由数据库补发接管
+                rabbitmq_settings = settings.rabbitmq_config()
+                if rabbitmq_settings is not None:
+                    # 交由 AsyncExitStack 统一托管，应用退出时自动取消在途发布并关闭连接
+                    app.state.file_job_wakeup_publisher = (
+                        await stack.enter_async_context(
+                            RabbitMQFileJobPublisher(
+                                rabbitmq_settings,
+                                app_env=settings.app_env,
+                            )
+                        )
+                    )
+                else:
+                    # 未配置 Broker 时置 None，上传确认仅落库等待维护循环处理
+                    app.state.file_job_wakeup_publisher = None
 
                 yield
         finally:
