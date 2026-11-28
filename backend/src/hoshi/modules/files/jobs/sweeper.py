@@ -74,63 +74,61 @@ class FileMaintenanceSweeper:
             return False
 
     async def run_once(self) -> None:
-        """执行单轮维护：先回收超时与清理历史，再分别运行 MQ 补发与 CDN 批领"""
+        """执行单轮维护：整轮纳入同一总预算，依次回收超时与清理历史，再并行运行 MQ 补发与 CDN 批领"""
         if not await self._try_acquire_lease():
             return
 
         deadline = time.monotonic() + self._round_budget_seconds
 
-        # 1. 回收最多 100 条超时 running 任务
+        # 整轮维护（含数据库超时回收、历史清理及并行派发）统一受单轮 30 秒总预算约束
         try:
-            async with self._session_factory() as session, session.begin():
-                summary = await FileMaintenanceRepository(
-                    session
-                ).reclaim_timed_out_jobs(
-                    now=utc_now(),
-                    limit=SWEEPER_RECLAIM_LIMIT,
-                )
-            if summary.requeued_count or summary.failed_count:
-                logger.info(
-                    "文件超时任务回收完成: requeued=%s failed=%s",
-                    summary.requeued_count,
-                    summary.failed_count,
-                )
-        except Exception:
-            logger.exception("文件超时任务回收异常")
-
-        # 2. 清理最多 500 条超 30 天的 succeeded 历史（失败历史保留）
-        if time.monotonic() < deadline:
-            try:
-                async with self._session_factory() as session, session.begin():
-                    deleted = await FileMaintenanceRepository(
-                        session
-                    ).cleanup_succeeded_job_history(
-                        retention_days=SWEEPER_HISTORY_RETENTION_DAYS,
-                        limit=SWEEPER_HISTORY_DELETE_LIMIT,
-                    )
-                if deleted:
-                    logger.info("已清理超期成功文件任务历史: deleted=%s", deleted)
-            except Exception:
-                logger.exception("清理成功文件任务历史异常")
-
-        # 3. 并行运行 MQ 补发与 CDN 批领（各自使用独立会话），由外层落实单轮 30 秒总预算
-        remaining_budget = deadline - time.monotonic()
-        if remaining_budget > 0:
-            dispatch_coroutines: list[Awaitable[None]] = []
-            if self._publisher is not None:
-                dispatch_coroutines.append(self._run_mq_wakeup_batches(deadline))
-            if self._cdn_batch_handler is not None:
-                dispatch_coroutines.append(self._run_cdn_batch())
-
-            if dispatch_coroutines:
+            async with asyncio.timeout(self._round_budget_seconds):
+                # 1. 回收最多 100 条超时 running 任务
                 try:
-                    async with asyncio.timeout(remaining_budget):
-                        await asyncio.gather(*dispatch_coroutines)
-                except TimeoutError:
-                    logger.warning(
-                        "文件维护轮次达到 %.1fs 总预算，结束本轮剩余派发",
-                        self._round_budget_seconds,
-                    )
+                    async with self._session_factory() as session, session.begin():
+                        summary = await FileMaintenanceRepository(
+                            session
+                        ).reclaim_timed_out_jobs(
+                            now=utc_now(),
+                            limit=SWEEPER_RECLAIM_LIMIT,
+                        )
+                    if summary.requeued_count or summary.failed_count:
+                        logger.info(
+                            "文件超时任务回收完成: requeued=%s failed=%s",
+                            summary.requeued_count,
+                            summary.failed_count,
+                        )
+                except Exception:
+                    logger.exception("文件超时任务回收异常")
+
+                # 2. 清理最多 500 条超 30 天的 succeeded 历史（失败历史保留）
+                try:
+                    async with self._session_factory() as session, session.begin():
+                        deleted = await FileMaintenanceRepository(
+                            session
+                        ).cleanup_succeeded_job_history(
+                            retention_days=SWEEPER_HISTORY_RETENTION_DAYS,
+                            limit=SWEEPER_HISTORY_DELETE_LIMIT,
+                        )
+                    if deleted:
+                        logger.info("已清理超期成功文件任务历史: deleted=%s", deleted)
+                except Exception:
+                    logger.exception("清理成功文件任务历史异常")
+
+                # 3. 并行运行 MQ 补发与 CDN 批领（各自使用独立会话与短事务）
+                dispatch_coroutines: list[Awaitable[None]] = []
+                if self._publisher is not None:
+                    dispatch_coroutines.append(self._run_mq_wakeup_batches(deadline))
+                if self._cdn_batch_handler is not None:
+                    dispatch_coroutines.append(self._run_cdn_batch())
+
+                if dispatch_coroutines:
+                    await asyncio.gather(*dispatch_coroutines)
+        except TimeoutError:
+            logger.warning(
+                "文件维护轮次达到 %.1fs 总预算，结束本轮剩余工作",
+                self._round_budget_seconds,
+            )
 
     async def _run_cdn_batch(self) -> None:
         """隔离执行单轮 CDN 批领异常，避免影响并行 MQ 补发"""
