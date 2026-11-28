@@ -40,6 +40,13 @@
 | `HOSHI_JWT_ACCESS_TTL` | `300` | 访问令牌有效期（单位：秒） |
 | `HOSHI_JWT_ADMIN_REFRESH_TTL` | `86400` | 管理端刷新令牌与会话有效期（单位：秒） |
 | `HOSHI_JWT_USER_REFRESH_TTL` | `2592000` | 用户端刷新令牌与会话有效期（单位：秒） |
+| `HOSHI_S3_ENDPOINT_URL` | 空 | 双桶对象存储内部 HTTP(S) 根地址（可带端口）；与双桶、凭据成组填写，全空时禁用存储 |
+| `HOSHI_S3_SIGNING_ENDPOINT_URL` | 复用内部地址 | 浏览器访问的预签名 HTTP(S) 根地址（可带端口）；生产启用存储时须显式配置 HTTPS 地址 |
+| `HOSHI_S3_REGION` | `us-east-1` | 对象存储签名区域 |
+| `HOSHI_S3_PRIVATE_BUCKET` | 空 | 私有桶名称，不可与公开桶同名 |
+| `HOSHI_S3_PUBLIC_BUCKET` | 空 | 公开桶名称，不可与私有桶同名 |
+| `HOSHI_S3_ACCESS_KEY` | 空 | Hoshi 应用 S3 Access Key（使用 `SecretStr`） |
+| `HOSHI_S3_SECRET_KEY` | 空 | Hoshi 应用 S3 Secret Key（使用 `SecretStr`） |
 
 首次填写 `.env` 时，可用以下命令生成符合长度要求的 `HOSHI_JWT_SECRET`：
 
@@ -98,6 +105,21 @@ uv run --locked uvicorn hoshi.main:create_app --factory --host 127.0.0.1 --port 
 本机连接凭据保留在本地环境配置中。RustFS 的 S3 API 地址用于应用接入，控制台地址用于人工管理。Qdrant 接入时通过集合命名前缀及 `user_id`、`character_id` Payload 字段完成逻辑隔离。 [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3) · [Qdrant 文档](https://qdrant.tech/documentation/)
 
 Hoshi 使用共享 Redis 的 DB 0，业务键以 `hoshi:` 开头。FastAPI 为每个应用进程管理一个异步 Redis 客户端，连接在首次执行 Redis 命令时建立。HTTP 路由通过 `get_redis` 依赖取得客户端。 [redis-py 异步客户端](https://redis.io/docs/latest/develop/clients/redis-py/async/) · [Redis SELECT](https://redis.io/docs/latest/commands/select/)
+
+### 双桶对象存储（RustFS）
+
+Hoshi 在每套环境使用独立的私有桶与公开桶，由共享 RustFS 管理方预先创建桶、策略与 Hoshi 应用凭据；应用运行时不执行建桶或修改策略操作。 [RustFS IAM](https://docs.rustfs.com/en/security-compliance/iam) · [S3 公开桶策略](https://docs.aws.amazon.com/AmazonS3/latest/userguide/granting-public-access.html)
+
+| 环境 | 私有桶 | 公开桶 |
+| --- | --- | --- |
+| 开发 | `hoshi-dev-private` | `hoshi-dev-public` |
+| 生产 | `hoshi-prod-private` | `hoshi-prod-public` |
+
+- **应用凭据权限**：Hoshi 应用凭据（Web、Worker、发布用例共用）拥有本环境两桶对象的 `s3:GetObject`、`s3:PutObject`、`s3:DeleteObject`，以及两桶的 `s3:ListBucket`（用于区分 `HEAD` 对象缺失与权限拒绝）。
+- **私有桶边界**：无匿名访问授权；所有浏览器直传原文件及私有衍生物均写入私有桶，由业务鉴权后签发 300 秒读取 URL。私有桶的 `uploads/` 前缀配置 7 天生命周期自动清理。
+- **私有桶 CORS**：由于浏览器直传 `PUT` 携带 `Content-Type` 与 `If-None-Match: *`（非 CORS 安全请求头，会触发 `OPTIONS` 预检），私有桶 CORS 须配置对应前端 Origin，且 `AllowedMethods` 包含 `PUT`、`AllowedHeaders` 显式包含 `Content-Type` 与 `If-None-Match`。
+- **公开桶边界**：Bucket Policy 仅授予对象级匿名 `s3:GetObject`（允许按完整地址 GET/HEAD，禁止列举、上传与删除）；仅接收业务明确获准公开的处理产物，媒体域名回源同样使用该只读入口。
+- **配置与反代约束**：`HOSHI_S3_ENDPOINT_URL`、`HOSHI_S3_PRIVATE_BUCKET`、`HOSHI_S3_PUBLIC_BUCKET`、`HOSHI_S3_ACCESS_KEY` 与 `HOSHI_S3_SECRET_KEY` 须成组填写，全空时禁用存储，部分填写或两桶同名时启动报错。浏览器经反向代理访问 `HOSHI_S3_SIGNING_ENDPOINT_URL` 时，反代须原样保留签名使用的 `Host`、路径与查询串。
 
 ## Hoshi 数据库
 

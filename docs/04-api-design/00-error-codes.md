@@ -11,6 +11,8 @@
 | 405 | `METHOD_NOT_ALLOWED` | 请求方法不受支持 | 路径存在，允许的方法由 `Allow` 响应头给出 |
 | 其他 4xx | `HTTP_ERROR` | 请求处理失败 | 框架返回的其他客户端错误 |
 | 500 | `INTERNAL_ERROR` | 服务器内部错误 | 服务端记录异常，客户端收到通用提示 |
+| 502 | `STORAGE_BAD_GATEWAY` | 对象存储服务响应异常 | 对象存储上游返回未归入不可用的 SDK 或协议错误 |
+| 503 | `STORAGE_UNAVAILABLE` | 对象存储服务暂时不可用 | 对象存储未启用、连接失败/中断/超时，或上游返回 `408`/`429`/`500`/`502`/`503`/`504`、`SlowDown`/`RequestTimeout`/`ServiceUnavailable` |
 
 ## 认证与账号通用业务错误码
 
