@@ -23,6 +23,7 @@ class S3Settings:
 def _validate_http_root_url(
     raw_url: str, *, field_name: str, require_https: bool = False
 ) -> str:
+    """校验并归一 HTTP(S) 根地址"""
     parsed = urlsplit(raw_url)
     scheme = parsed.scheme.lower()
     allowed_schemes = ("https",) if require_https else ("http", "https")
@@ -42,6 +43,7 @@ def _validate_http_root_url(
     except ValueError:
         raise ValueError(f"{field_name} 包含无效端口") from None
 
+    # 仅允许空路径或末尾单斜杠，拒绝额外路径、查询串与片段
     if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
         raise ValueError(f"{field_name} 必须是根地址，不能包含路径、查询串或片段")
 
@@ -125,6 +127,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_s3_settings(self) -> Self:
+        # 核心 5 项全空视为未启用存储，部分填写直接拦截
         core_values = (
             self.s3_endpoint_url,
             self.s3_private_bucket,
@@ -158,6 +161,7 @@ class Settings(BaseSettings):
             self.s3_endpoint_url, field_name="HOSHI_S3_ENDPOINT_URL"
         )
 
+        # 开发环境默认复用内部地址，生产环境启用存储时强制显式配置 HTTPS 签名地址
         require_https_signing = self.app_env == "production"
         if self.s3_signing_endpoint_url is not None:
             self.s3_signing_endpoint_url = _validate_http_root_url(
@@ -173,6 +177,7 @@ class Settings(BaseSettings):
         return self
 
     def s3_config(self) -> S3Settings | None:
+        """返回启用状态的双桶对象存储配置，未启用时返回 None"""
         if (
             self.s3_endpoint_url is None
             or self.s3_private_bucket is None

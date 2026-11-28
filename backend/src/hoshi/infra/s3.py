@@ -29,11 +29,12 @@ def create_s3_client(
     max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS,
     session: AioSession | None = None,
 ) -> AbstractAsyncContextManager[AioBaseClient]:
-    """创建 aiobotocore S3 异步客户端上下文管理器。"""
+    """创建 aiobotocore S3 异步客户端上下文管理器"""
     if not isinstance(endpoint_url, str) or not endpoint_url.strip():
         raise ValueError("endpoint_url 不能为空")
     if not isinstance(region_name, str) or not region_name.strip():
         raise ValueError("region_name 不能为空")
+    # 校验可覆盖的超时与连接池上限，排除 bool 与非有限浮点值
     if (
         isinstance(read_timeout, bool)
         or not isinstance(read_timeout, (int, float))
@@ -51,6 +52,7 @@ def create_s3_client(
     aws_access_key_id = _unwrap_secret(access_key, field_name="access_key")
     aws_secret_access_key = _unwrap_secret(secret_key, field_name="secret_key")
 
+    # 固定 path 风格与 SigV4，并将校验和策略设为 when_required 以兼容浏览器直传
     config = Config(
         signature_version="s3v4",
         s3={"addressing_style": "path"},
