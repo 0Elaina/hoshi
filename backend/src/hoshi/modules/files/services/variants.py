@@ -3,7 +3,6 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from hoshi.modules.files.cdn import build_public_media_url
 from hoshi.modules.files.constants import FileApiCode
 from hoshi.modules.files.enums import (
     FileAssetStatus,
@@ -12,13 +11,14 @@ from hoshi.modules.files.enums import (
     FileVariantVisibility,
     lookup_variant_preset,
 )
+from hoshi.modules.files.repositories.variants import FileVariantRepository
 from hoshi.modules.files.schemas import (
     JobWakeupPublisher,
     VariantAccessView,
     VariantRecord,
 )
 from hoshi.modules.files.storage import FileObjectStorage
-from hoshi.modules.files.variant_repository import FileVariantRepository
+from hoshi.modules.files.storage.cdn import build_public_media_url
 from hoshi.shared.http.api_code import CommonApiCode
 from hoshi.shared.http.exception import BusinessException
 from hoshi.shared.utils.time_utils import utc_now

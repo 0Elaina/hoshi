@@ -19,11 +19,12 @@ from hoshi.infra.rabbitmq import (
     decode_job_id,
 )
 from hoshi.infra.s3 import create_s3_client
-from hoshi.modules.files.cdn import CdnPurgeAdapter, CdnPurgeBatchProcessor
 from hoshi.modules.files.enums import FileJobType
-from hoshi.modules.files.job_runner import FileJobRunner
-from hoshi.modules.files.sweeper import CdnBatchHandler, FileMaintenanceSweeper
-from hoshi.modules.files.worker_storage import WorkerObjectStorage
+from hoshi.modules.files.jobs.cdn_purge import CdnPurgeBatchProcessor
+from hoshi.modules.files.jobs.runner import FileJobRunner
+from hoshi.modules.files.jobs.sweeper import CdnBatchHandler, FileMaintenanceSweeper
+from hoshi.modules.files.storage.cdn import CdnPurgeAdapter
+from hoshi.modules.files.storage.worker import WorkerObjectStorage
 
 logger = logging.getLogger(__name__)
 

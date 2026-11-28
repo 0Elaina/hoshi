@@ -17,13 +17,13 @@ from hoshi.modules.files.enums import (
     MediaKind,
 )
 from hoshi.modules.files.object_keys import build_upload_key
-from hoshi.modules.files.rate_limit import UploadRateLimiter
-from hoshi.modules.files.repository import FileRepository
+from hoshi.modules.files.repositories.assets import FileAssetRepository
 from hoshi.modules.files.schemas import (
     JobWakeupPublisher,
     UploadConfirmation,
     UploadGrant,
 )
+from hoshi.modules.files.services.rate_limit import UploadRateLimiter
 from hoshi.modules.files.storage import PRESIGN_EXPIRES_SECONDS, FileObjectStorage
 from hoshi.shared.http.api_code import CommonApiCode
 from hoshi.shared.http.exception import BusinessException
@@ -85,13 +85,13 @@ class FileUploadService:
         session: AsyncSession,
         storage: FileObjectStorage,
         rate_limiter: UploadRateLimiter,
-        repository: FileRepository | None = None,
+        repository: FileAssetRepository | None = None,
         wakeup_publisher: JobWakeupPublisher | None = None,
     ) -> None:
         self._session = session
         self._storage = storage
         self._rate_limiter = rate_limiter
-        self._repository = repository or FileRepository(session)
+        self._repository = repository or FileAssetRepository(session)
         self._wakeup_publisher = wakeup_publisher
 
     async def create_upload(

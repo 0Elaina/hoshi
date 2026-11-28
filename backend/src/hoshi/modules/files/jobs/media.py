@@ -19,6 +19,17 @@ class ValidatedImageInfo:
     height: int
 
 
+@dataclass(frozen=True, slots=True)
+class RenderedImageVariant:
+    """图片规格渲染输出产物"""
+
+    data: bytes
+    content_type: str
+    size_bytes: int
+    width: int
+    height: int
+
+
 class ImageValidationError(Exception):
     """图片内容校验拒绝异常，供 Worker 映射为 validation_rejected"""
 
@@ -52,7 +63,6 @@ def validate_image_bytes(
         with Image.open(BytesIO(data)) as probe:
             detected_format_name = (probe.format or "").upper()
             detected_format = MediaFormat.from_format_name(detected_format_name)
-            # 校验实际解码格式属于图片且与声明 MIME 严格一致
             if (
                 detected_format is None
                 or detected_format.media_kind != MediaKind.IMAGE
@@ -111,17 +121,6 @@ def validate_image_bytes(
         width=width,
         height=height,
     )
-
-
-@dataclass(frozen=True, slots=True)
-class RenderedImageVariant:
-    """图片规格渲染输出产物"""
-
-    data: bytes
-    content_type: str
-    size_bytes: int
-    width: int
-    height: int
 
 
 def render_image_variant(

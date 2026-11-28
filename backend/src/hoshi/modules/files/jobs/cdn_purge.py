@@ -1,49 +1,28 @@
 import asyncio
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from hoshi.modules.files.job_policy import (
+from hoshi.modules.files.jobs.policy import (
     DEFAULT_CDN_HTTP_TIMEOUT_SECONDS,
     format_last_error,
 )
-from hoshi.modules.files.job_repository import ClaimedCdnPurgeJob, FileJobRepository
+from hoshi.modules.files.repositories.maintenance import (
+    ClaimedCdnPurgeJob,
+    FileMaintenanceRepository,
+)
+from hoshi.modules.files.storage.cdn import (
+    CdnPurgeAdapter,
+    CdnPurgeOutcome,
+    CdnPurgeResult,
+    build_public_media_url,
+)
 from hoshi.shared.utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
-# 默认单轮 CDN 批量 URL 上限（可按具体供应商配额调低）
+# 默认单轮 CDN 批量 URL 上限（供应商限额更低时按配额覆盖）
 DEFAULT_CDN_PURGE_BATCH_LIMIT = 30
-
-
-class CdnPurgeOutcome(StrEnum):
-    SUCCEEDED = "succeeded"
-    RETRYABLE_FAILURE = "retryable_failure"
-    PERMANENT_FAILURE = "permanent_failure"
-
-
-@dataclass(frozen=True, slots=True)
-class CdnPurgeResult:
-    """CDN 批量清理适配器返回的结构化结果"""
-
-    outcome: CdnPurgeOutcome
-    retry_after_seconds: int | None = None
-    error_code: str | None = None
-
-
-class CdnPurgeAdapter(Protocol):
-    """具体 CDN 供应商接入须实现的批量 URL 清理契约"""
-
-    async def purge_urls(self, urls: Sequence[str]) -> CdnPurgeResult: ...
-
-
-def build_public_media_url(base_url: str, object_key: str) -> str:
-    """将公开媒体根基址与对象键拼接为不可变公开访问 URL"""
-    return f"{base_url.rstrip('/')}/{object_key.lstrip('/')}"
 
 
 class CdnPurgeBatchProcessor:
@@ -69,14 +48,14 @@ class CdnPurgeBatchProcessor:
     async def run_one_batch(self) -> None:
         """领取一批到期 purge_variant_cache 任务，去重 URL 发一次请求后按尝试号批量回写"""
         async with self._session_factory() as session, session.begin():
-            claimed = await FileJobRepository(session).claim_cdn_purge_batch(
+            claimed = await FileMaintenanceRepository(session).claim_cdn_purge_batch(
                 limit=self._batch_limit
             )
 
         if not claimed:
             return
 
-        # 区分缺少对象键的异常任务与有效任务，并为有效任务去重构造公开 URL
+        # 区分缺失对象键的异常记录与有效任务，并对公开 URL 去重
         missing_location_jobs: list[ClaimedCdnPurgeJob] = []
         valid_jobs: list[ClaimedCdnPurgeJob] = []
         unique_urls_map: dict[str, None] = {}
@@ -91,7 +70,7 @@ class CdnPurgeBatchProcessor:
 
         if missing_location_jobs:
             async with self._session_factory() as session, session.begin():
-                await FileJobRepository(session).complete_cdn_purge_batch(
+                await FileMaintenanceRepository(session).complete_cdn_purge_batch(
                     jobs=missing_location_jobs,
                     outcome=CdnPurgeOutcome.PERMANENT_FAILURE.value,
                     last_error=format_last_error(
@@ -133,7 +112,7 @@ class CdnPurgeBatchProcessor:
         )
         # 按领取时的 (job_id, attempt_count) 条件批量回写结果
         async with self._session_factory() as session, session.begin():
-            await FileJobRepository(session).complete_cdn_purge_batch(
+            await FileMaintenanceRepository(session).complete_cdn_purge_batch(
                 jobs=valid_jobs,
                 outcome=result.outcome.value,
                 last_error=last_error,

@@ -1,9 +1,10 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import Row, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,31 +36,47 @@ class VariantLocationRow:
 
 
 @dataclass(frozen=True, slots=True)
-class WithdrawnVariantRow:
-    id: UUID
+class VariantGenerationSnapshot:
+    variant_id: UUID
     asset_id: UUID
+    preset_name: str
+    preset_revision: int
+    visibility: FileVariantVisibility
+    variant_status: FileVariantStatus
+    media_kind: MediaKind
+    asset_status: FileAssetStatus
+    original_bucket: str | None
+    original_key: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class VariantCleanupSnapshot:
+    variant_id: UUID
+    asset_id: UUID
+    visibility: FileVariantVisibility
+    status: FileVariantStatus
     bucket: str | None
     object_key: str | None
 
 
-def _row_to_variant_record(row: object) -> VariantRecord:
+def _row_to_variant_record(row: Row[Any]) -> VariantRecord:
     return VariantRecord(
-        id=row.id,  # type: ignore[attr-defined]
-        asset_id=row.asset_id,  # type: ignore[attr-defined]
-        preset_name=row.preset_name,  # type: ignore[attr-defined]
-        preset_revision=row.preset_revision,  # type: ignore[attr-defined]
-        visibility=FileVariantVisibility(row.visibility),  # type: ignore[attr-defined]
-        status=FileVariantStatus(row.status),  # type: ignore[attr-defined]
-        content_type=row.content_type,  # type: ignore[attr-defined]
-        size_bytes=row.size_bytes,  # type: ignore[attr-defined]
-        width=row.width,  # type: ignore[attr-defined]
-        height=row.height,  # type: ignore[attr-defined]
-        duration_ms=row.duration_ms,  # type: ignore[attr-defined]
+        id=row.id,
+        asset_id=row.asset_id,
+        preset_name=row.preset_name,
+        preset_revision=row.preset_revision,
+        visibility=FileVariantVisibility(row.visibility),
+        status=FileVariantStatus(row.status),
+        content_type=row.content_type,
+        size_bytes=row.size_bytes,
+        width=row.width,
+        height=row.height,
+        duration_ms=row.duration_ms,
     )
 
 
 class FileVariantRepository:
-    """文件衍生规格申请、批量查询与撤回仓储"""
+    """文件衍生规格申请、批量查询、撤回以及后台生成/清理写回仓储"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -255,7 +272,6 @@ class FileVariantRepository:
             return [], []
 
         withdrawn_ids = [row.id for row in rows]
-        # 仅对已实际落盘对象位置的规格登记删源任务
         next_wakeup = now + timedelta(
             seconds=FileJobTiming.MQ_INITIAL_WAKEUP_DELAY_SECONDS
         )
@@ -290,3 +306,129 @@ class FileVariantRepository:
         )
         created_job_ids = list((await self._session.scalars(insert_stmt)).all())
         return withdrawn_ids, created_job_ids
+
+    async def get_variant_generation_snapshot(
+        self, variant_id: UUID
+    ) -> VariantGenerationSnapshot | None:
+        """短事务联表读取规格生成所需的规格与原件快照"""
+        stmt = (
+            select(
+                FileVariant.id.label("variant_id"),
+                FileVariant.asset_id,
+                FileVariant.preset_name,
+                FileVariant.preset_revision,
+                FileVariant.visibility,
+                FileVariant.status.label("variant_status"),
+                FileAsset.media_kind,
+                FileAsset.status.label("asset_status"),
+                FileAsset.original_bucket,
+                FileAsset.original_key,
+            )
+            .join(FileAsset, FileAsset.id == FileVariant.asset_id)
+            .where(FileVariant.id == variant_id)
+        )
+        row = (await self._session.execute(stmt)).one_or_none()
+        if row is None:
+            return None
+        return VariantGenerationSnapshot(
+            variant_id=row.variant_id,
+            asset_id=row.asset_id,
+            preset_name=row.preset_name,
+            preset_revision=row.preset_revision,
+            visibility=FileVariantVisibility(row.visibility),
+            variant_status=FileVariantStatus(row.variant_status),
+            media_kind=MediaKind(row.media_kind),
+            asset_status=FileAssetStatus(row.asset_status),
+            original_bucket=row.original_bucket,
+            original_key=row.original_key,
+        )
+
+    async def is_variant_still_unavailable(self, variant_id: UUID) -> bool:
+        """写入公开桶前二次确认规格仍处于可生成的 unavailable 状态"""
+        status_value = await self._session.scalar(
+            select(FileVariant.status).where(FileVariant.id == variant_id)
+        )
+        return status_value == FileVariantStatus.UNAVAILABLE.value
+
+    async def get_variant_cleanup_snapshot(
+        self, variant_id: UUID
+    ) -> VariantCleanupSnapshot | None:
+        """短事务读取删源所需的规格状态与对象位置"""
+        stmt = select(
+            FileVariant.id,
+            FileVariant.asset_id,
+            FileVariant.visibility,
+            FileVariant.status,
+            FileVariant.bucket,
+            FileVariant.object_key,
+        ).where(FileVariant.id == variant_id)
+        row = (await self._session.execute(stmt)).one_or_none()
+        if row is None:
+            return None
+        return VariantCleanupSnapshot(
+            variant_id=row.id,
+            asset_id=row.asset_id,
+            visibility=FileVariantVisibility(row.visibility),
+            status=FileVariantStatus(row.status),
+            bucket=row.bucket,
+            object_key=row.object_key,
+        )
+
+    async def complete_generate_variant_success(
+        self,
+        *,
+        job_id: int,
+        attempt_count: int,
+        variant_id: UUID,
+        bucket: str,
+        object_key: str,
+        content_type: str,
+        size_bytes: int,
+        width: int | None,
+        height: int | None,
+    ) -> bool:
+        """先锁规格再更新任务，仅当规格仍为 unavailable 且尝试号匹配时登记 ready"""
+        # 与规格申请保持一致的加锁顺序：先锁 file_variants 再更新 file_jobs，避免死锁
+        variant = await self._session.scalar(
+            select(FileVariant).where(FileVariant.id == variant_id).with_for_update()
+        )
+        matched_job_id = await self._session.scalar(
+            update(FileJob)
+            .where(
+                FileJob.id == job_id,
+                FileJob.status == FileJobStatus.RUNNING.value,
+                FileJob.attempt_count == attempt_count,
+            )
+            .values(
+                status=FileJobStatus.SUCCEEDED.value,
+                last_error=None,
+                updated_at=func.current_timestamp(),
+            )
+            .returning(FileJob.id)
+        )
+        # 尝试号失效或规格已撤回/就绪时放弃登记，由调用方清理孤儿对象
+        if (
+            matched_job_id is None
+            or variant is None
+            or variant.status != FileVariantStatus.UNAVAILABLE.value
+        ):
+            return False
+
+        await self._session.execute(
+            update(FileVariant)
+            .where(
+                FileVariant.id == variant_id,
+                FileVariant.status == FileVariantStatus.UNAVAILABLE.value,
+            )
+            .values(
+                status=FileVariantStatus.READY.value,
+                bucket=bucket,
+                object_key=object_key,
+                content_type=content_type,
+                size_bytes=size_bytes,
+                width=width,
+                height=height,
+                updated_at=func.current_timestamp(),
+            )
+        )
+        return True

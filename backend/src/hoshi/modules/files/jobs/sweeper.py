@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hoshi.infra.rabbitmq import RabbitMQFileJobPublisher
 from hoshi.modules.files.constants import FileRedisKey
-from hoshi.modules.files.job_repository import FileJobRepository, WakeupJobItem
+from hoshi.modules.files.repositories.maintenance import (
+    FileMaintenanceRepository,
+    WakeupJobItem,
+)
 from hoshi.shared.utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -80,7 +83,9 @@ class FileMaintenanceSweeper:
         # 1. 回收最多 100 条超时 running 任务
         try:
             async with self._session_factory() as session, session.begin():
-                summary = await FileJobRepository(session).reclaim_timed_out_jobs(
+                summary = await FileMaintenanceRepository(
+                    session
+                ).reclaim_timed_out_jobs(
                     now=utc_now(),
                     limit=SWEEPER_RECLAIM_LIMIT,
                 )
@@ -97,7 +102,7 @@ class FileMaintenanceSweeper:
         if time.monotonic() < deadline:
             try:
                 async with self._session_factory() as session, session.begin():
-                    deleted = await FileJobRepository(
+                    deleted = await FileMaintenanceRepository(
                         session
                     ).cleanup_succeeded_job_history(
                         retention_days=SWEEPER_HISTORY_RETENTION_DAYS,
@@ -112,7 +117,7 @@ class FileMaintenanceSweeper:
         if self._publisher is not None and time.monotonic() < deadline:
             await self._run_mq_wakeup_batches(deadline)
 
-        # 4. 独立运行 CDN 批领（由阶段 3 注入，每轮至多一次批量 HTTP 清理请求）
+        # 4. 独立运行 CDN 批领（每轮至多一次批量 HTTP 清理请求）
         if self._cdn_batch_handler is not None and time.monotonic() < deadline:
             try:
                 await self._cdn_batch_handler()
@@ -140,7 +145,9 @@ class FileMaintenanceSweeper:
         while time.monotonic() < deadline:
             try:
                 async with self._session_factory() as session, session.begin():
-                    batch = await FileJobRepository(session).claim_mq_wakeup_batch(
+                    batch = await FileMaintenanceRepository(
+                        session
+                    ).claim_mq_wakeup_batch(
                         limit=SWEEPER_WAKEUP_BATCH_LIMIT,
                         wakeup_delay_seconds=SWEEPER_WAKEUP_DELAY_SECONDS,
                     )

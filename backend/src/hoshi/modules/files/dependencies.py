@@ -8,10 +8,10 @@ from hoshi.api.dependencies import (
     SessionDependency,
     SettingsDependency,
 )
-from hoshi.modules.files.rate_limit import UploadRateLimiter
 from hoshi.modules.files.schemas import JobWakeupPublisher
-from hoshi.modules.files.upload_service import FileUploadService
-from hoshi.modules.files.variant_service import FileVariantService
+from hoshi.modules.files.services.rate_limit import UploadRateLimiter
+from hoshi.modules.files.services.upload import FileUploadService
+from hoshi.modules.files.services.variants import FileVariantService
 
 
 def get_file_upload_service(
