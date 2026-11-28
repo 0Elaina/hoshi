@@ -9,7 +9,7 @@ from hoshi.api.v1.admin import admin_api
 from hoshi.core.config import Settings
 from hoshi.core.logging import configure_logging
 from hoshi.db.session import create_db_engine, create_session_factory
-from hoshi.infra.object_storage import S3ObjectStorage, open_s3_client
+from hoshi.infra.object_storage import open_s3_client
 from hoshi.modules.auth.jwt import JwtService
 from hoshi.modules.auth.rate_limit import LoginRateLimiter
 
@@ -51,9 +51,7 @@ def create_app() -> FastAPI:
             ):
                 app.state.redis = redis
                 app.state.login_rate_limiter = LoginRateLimiter(redis)
-                app.state.object_storage = S3ObjectStorage(
-                    s3_client, settings.s3_bucket
-                )
+                app.state.s3_client = s3_client
                 yield
         finally:
             await engine.dispose()

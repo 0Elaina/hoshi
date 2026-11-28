@@ -42,7 +42,7 @@
 | `HOSHI_JWT_USER_REFRESH_TTL` | `2592000` | 用户端刷新令牌与会话有效期（单位：秒） |
 | `HOSHI_S3_ENDPOINT_URL` | `http://127.0.0.1:9000` | 共享 RustFS 的 S3 API 地址 |
 | `HOSHI_S3_REGION` | `us-east-1` | S3 签名区域，须与 RustFS 配置一致 |
-| `HOSHI_S3_BUCKET` | `hoshi-files` | 私有文件存储桶名称 |
+| `HOSHI_S3_BUCKET` | `hoshi-media` | 私有媒体存储桶名称 |
 | `HOSHI_S3_ACCESS_KEY` | 启动必填 | RustFS S3 访问密钥，本地取自共享 `.env` 的 `RUSTFS_ACCESS_KEY` |
 | `HOSHI_S3_SECRET_KEY` | 启动必填 | RustFS S3 私有密钥，本地取自共享 `.env` 的 `RUSTFS_SECRET_KEY` |
 
@@ -104,9 +104,7 @@ uv run --locked uvicorn hoshi.main:create_app --factory --host 127.0.0.1 --port 
 
 Hoshi 使用共享 Redis 的 DB 0，业务键以 `hoshi:` 开头。FastAPI 为每个应用进程管理一个异步 Redis 客户端，连接在首次执行 Redis 命令时建立。HTTP 路由通过 `get_redis` 依赖取得客户端。 [redis-py 异步客户端](https://redis.io/docs/latest/develop/clients/redis-py/async/) · [Redis SELECT](https://redis.io/docs/latest/commands/select/)
 
-RustFS 对象存储使用单个私有桶 `hoshi-files`。本地首次启动后端前，由维护者通过 RustFS 控制台（默认 `http://127.0.0.1:9001`）预建 `hoshi-files` 并保持私有访问；应用启动仅构造客户端，不负责建桶与授权。本地开发复用共享 `.env` 中的 `RUSTFS_ACCESS_KEY` 与 `RUSTFS_SECRET_KEY`；部署环境使用专用应用凭据，IAM 策略将 `s3:PutObject`、`s3:GetObject`、`s3:DeleteObject` 限定到 `arn:aws:s3:::hoshi-files/*`，生产连接经由 HTTPS。RustFS 文件访问地址须与主站使用独立的 Origin（禁止将用户上传源文件挂在主站同源路径下，避免浏览器以主站权限加载主动内容），接通浏览器直传时需为 `hoshi-files` 配置实际前端 Origin 的 CORS 规则，允许 `PUT`、`GET` 方法及 `Content-Type`、`If-None-Match` 请求头。
-
-FastAPI 在 `lifespan` 中为每个 Uvicorn worker 装配一个共享异步 `aiobotocore` 客户端（`s3v4` 签名、`path` 风格寻址），封装为 `S3ObjectStorage` 挂载在 `app.state.object_storage`，路由通过 `ObjectStorageDependency`（`get_object_storage`）注入使用；仅构造 S3 客户端的入口会校验 `HOSHI_S3_ACCESS_KEY` 与 `HOSHI_S3_SECRET_KEY` 非空，Alembic 迁移仍可独立读取数据库配置运行。本机使用单个客户端，`HOSHI_S3_ENDPOINT_URL` 同时供后端访问和浏览器直连（如 `http://127.0.0.1:9000`）；若将来后端使用容器内部地址而浏览器使用对外地址，须用浏览器可达的 Endpoint 构造签名客户端并复用同一组凭据，签出的 URL 应原样返回（`Host` 参与 SigV4 签名）。 [aiobotocore 文档](https://aiobotocore.aio-libs.org/en/stable/) · [RustFS IAM](https://docs.rustfs.com/en/security-compliance/iam) · [RustFS CORS 配置](https://docs.rustfs.com/en/administration/cors) · [浏览器同源规则](https://html.spec.whatwg.org/multipage/browsers.html#origin)
+RustFS 对象存储使用单个私有桶 `hoshi-media`。本地首次启动后端前，由维护者通过 RustFS 控制台（默认 `http://127.0.0.1:9001`）预建 `hoshi-media` 并保持私有访问；应用启动仅构造客户端，不负责建桶与授权。本地开发复用共享 `.env` 中的 `RUSTFS_ACCESS_KEY` 与 `RUSTFS_SECRET_KEY`；部署环境使用专用应用凭据，IAM 策略将 `s3:PutObject`、`s3:GetObject`、`s3:DeleteObject` 限定到 `arn:aws:s3:::hoshi-media/*`，生产连接经由 HTTPS。FastAPI 在 `lifespan` 中为每个 Uvicorn worker 装配一个共享异步 `aiobotocore` 客户端（`s3v4` 签名、`path` 风格寻址），挂载在 `app.state.s3_client`；仅构造 S3 客户端的入口会校验 `HOSHI_S3_ACCESS_KEY` 与 `HOSHI_S3_SECRET_KEY` 非空，Alembic 迁移仍可独立读取数据库配置运行。 [aiobotocore 文档](https://aiobotocore.aio-libs.org/en/stable/) · [RustFS IAM](https://docs.rustfs.com/en/security-compliance/iam)
 
 ## Hoshi 数据库
 

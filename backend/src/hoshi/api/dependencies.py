@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from hoshi.core.config import Settings
 from hoshi.core.security import get_password_encoder
-from hoshi.infra.object_storage import S3ObjectStorage
 from hoshi.modules.auth.service import AccountAuthenticator
 from hoshi.modules.user.repository import UserRepository
 from hoshi.modules.user.service import AccountAuthenticateService
@@ -45,10 +44,3 @@ def get_account_authenticator(session: SessionDependency) -> AccountAuthenticato
     return AccountAuthenticateService(
         session, get_password_encoder(), UserRepository(session)
     )
-
-
-async def get_object_storage(request: Request) -> S3ObjectStorage:
-    return cast(S3ObjectStorage, request.app.state.object_storage)
-
-
-type ObjectStorageDependency = Annotated[S3ObjectStorage, Depends(get_object_storage)]
