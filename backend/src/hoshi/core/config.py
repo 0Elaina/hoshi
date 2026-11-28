@@ -20,6 +20,15 @@ class S3Settings:
     secret_key: SecretStr
 
 
+@dataclass(frozen=True, slots=True)
+class RabbitMQSettings:
+    host: str
+    port: int
+    user: str
+    password: SecretStr
+    vhost: str
+
+
 def _validate_http_root_url(
     raw_url: str, *, field_name: str, require_https: bool = False
 ) -> str:
@@ -92,23 +101,39 @@ class Settings(BaseSettings):
     s3_access_key: SecretStr | None = None
     s3_secret_key: SecretStr | None = None
 
+    # RabbitMQ 文件任务唤醒
+    rabbitmq_host: str | None = None
+    rabbitmq_port: int = Field(default=5672, ge=1, le=65535)
+    rabbitmq_user: str | None = None
+    rabbitmq_password: SecretStr | None = None
+    rabbitmq_vhost: str = "/"
+
+    # 公开媒体基址与 CDN 清理开关
+    public_media_base_url: str | None = None
+    cdn_purge_enabled: bool = False
+
     @field_validator(
         "s3_endpoint_url",
         "s3_signing_endpoint_url",
         "s3_private_bucket",
         "s3_public_bucket",
+        "rabbitmq_host",
+        "rabbitmq_user",
+        "public_media_base_url",
         mode="before",
     )
     @classmethod
-    def _normalize_optional_s3_str(cls, value: object) -> object:
+    def _normalize_optional_str(cls, value: object) -> object:
         if isinstance(value, str):
             stripped = value.strip()
             return stripped or None
         return value
 
-    @field_validator("s3_access_key", "s3_secret_key", mode="before")
+    @field_validator(
+        "s3_access_key", "s3_secret_key", "rabbitmq_password", mode="before"
+    )
     @classmethod
-    def _normalize_optional_s3_secret(cls, value: object) -> object:
+    def _normalize_optional_secret(cls, value: object) -> object:
         if isinstance(value, SecretStr):
             stripped = value.get_secret_value().strip()
             return SecretStr(stripped) if stripped else None
@@ -123,6 +148,15 @@ class Settings(BaseSettings):
         stripped = value.strip()
         if not stripped:
             raise ValueError("HOSHI_S3_REGION 不能为空")
+        return stripped
+
+    @field_validator("rabbitmq_vhost")
+    @classmethod
+    def _validate_rabbitmq_vhost(cls, value: str) -> str:
+        # 去除首尾空白并禁止空 vhost
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("HOSHI_RABBITMQ_VHOST 不能为空")
         return stripped
 
     @model_validator(mode="after")
@@ -176,6 +210,42 @@ class Settings(BaseSettings):
 
         return self
 
+    @model_validator(mode="after")
+    def _validate_rabbitmq_settings(self) -> Self:
+        # 核心 3 项全空视为未启用 RabbitMQ，部分填写直接拦截
+        core_values = (
+            self.rabbitmq_host,
+            self.rabbitmq_user,
+            self.rabbitmq_password,
+        )
+        if all(value is None for value in core_values):
+            return self
+        if any(value is None for value in core_values):
+            raise ValueError(
+                "RabbitMQ 配置不完整，HOSHI_RABBITMQ_HOST、HOSHI_RABBITMQ_USER、"
+                "HOSHI_RABBITMQ_PASSWORD 须成组填写"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_public_media_settings(self) -> Self:
+        # 公开媒体基址在生产环境强制使用 HTTPS，避免回源与公开链接降级
+        if self.public_media_base_url is not None:
+            self.public_media_base_url = _validate_http_root_url(
+                self.public_media_base_url,
+                field_name="HOSHI_PUBLIC_MEDIA_BASE_URL",
+                require_https=self.app_env == "production",
+            )
+        # 启用 CDN 清理前必须同时启用对象存储并提供公开媒体基址
+        if self.cdn_purge_enabled and (
+            self.s3_config() is None or self.public_media_base_url is None
+        ):
+            raise ValueError(
+                "启用 HOSHI_CDN_PURGE_ENABLED 时必须同时启用对象存储并配置 "
+                "HOSHI_PUBLIC_MEDIA_BASE_URL"
+            )
+        return self
+
     def s3_config(self) -> S3Settings | None:
         """返回启用状态的双桶对象存储配置，未启用时返回 None"""
         if (
@@ -195,6 +265,24 @@ class Settings(BaseSettings):
             public_bucket=self.s3_public_bucket,
             access_key=self.s3_access_key,
             secret_key=self.s3_secret_key,
+        )
+
+    def rabbitmq_config(self) -> RabbitMQSettings | None:
+        """返回启用状态的 RabbitMQ 配置，未启用时返回 None"""
+        # 与模型校验保持一致，任一核心项为空均视为未启用
+        if (
+            self.rabbitmq_host is None
+            or self.rabbitmq_user is None
+            or self.rabbitmq_password is None
+        ):
+            return None
+
+        return RabbitMQSettings(
+            host=self.rabbitmq_host,
+            port=self.rabbitmq_port,
+            user=self.rabbitmq_user,
+            password=self.rabbitmq_password,
+            vhost=self.rabbitmq_vhost,
         )
 
     def database_url(self) -> URL:

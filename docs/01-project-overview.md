@@ -51,7 +51,7 @@ flowchart LR
     Agent -. 长期记忆 / 设定集检索 .-> Qdrant
     Backend -->|redis-py| Redis
     Backend -->|aiobotocore / S3 API| RustFS
-    Backend -. 异步记忆 / 主动关怀，按需接入 .-> RabbitMQ
+    Backend -->|aio-pika / AMQP| RabbitMQ
 ```
 
 ## 仓库组织
@@ -65,7 +65,8 @@ flowchart LR
 | `backend/src/hoshi/core/` | 应用配置和数据源连接配置 |
 | `backend/src/hoshi/api/` | FastAPI 集成、全局异常处理和请求依赖 |
 | `backend/src/hoshi/db/` | SQLAlchemy 声明式基类、引擎和会话工厂 |
-| `backend/src/hoshi/infra/` | 外部基础设施客户端工厂（如 `aiobotocore` S3 异步客户端） |
+| `backend/src/hoshi/infra/` | 外部基础设施客户端工厂（如 `aiobotocore` S3 客户端与 `aio-pika` RabbitMQ 发布器） |
+| `backend/src/hoshi/workers/` | 独立后台 Worker 启动入口（如文件校验、规格生成、删源与分钟维护循环） |
 | `backend/src/hoshi/shared/http/` | 各业务模块共享的 HTTP 响应、错误码、业务异常和分页契约 |
 | `backend/src/hoshi/shared/utils/` | 各业务模块实际复用的通用工具 |
 | `backend/src/hoshi/modules/` | 随功能接入建立的业务模块 |

@@ -32,3 +32,8 @@ class CommonApiCode:
         "STORAGE_UNAVAILABLE",
         "对象存储服务暂时不可用",
     )
+    SERVICE_UNAVAILABLE = ApiCode(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "SERVICE_UNAVAILABLE",
+        "服务暂时不可用，请稍后重试",
+    )

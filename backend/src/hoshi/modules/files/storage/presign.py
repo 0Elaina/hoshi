@@ -4,11 +4,7 @@ from typing import Any
 from aiobotocore.client import AioBaseClient
 from botocore.exceptions import ClientError
 
-from hoshi.modules.files.object_keys import (
-    ASSET_KEY_PREFIX,
-    ORIGINAL_ASSET_SEGMENT,
-    UPLOAD_KEY_PREFIX,
-)
+from hoshi.modules.files.object_keys import ObjectKeyLayout
 
 # 预签名有效期与私有读取缓存均固定为 300 秒
 PRESIGN_EXPIRES_SECONDS = 300
@@ -102,7 +98,7 @@ class FileObjectStorage:
         self, key: str, content_type: str, size_bytes: int
     ) -> PresignedPut:
         """为 uploads/ 临时上传键签发带长度和条件写入约束的 PUT 预签名"""
-        _validate_object_key(key, allowed_prefixes=(UPLOAD_KEY_PREFIX,))
+        _validate_object_key(key, allowed_prefixes=(ObjectKeyLayout.UPLOAD_PREFIX,))
 
         if (
             not isinstance(content_type, str)
@@ -142,7 +138,9 @@ class FileObjectStorage:
 
     async def presign_get(self, key: str) -> str:
         """为业务已授权的 assets/ 键签发私有 GET 预签名 URL"""
-        segments = _validate_object_key(key, allowed_prefixes=(ASSET_KEY_PREFIX,))
+        segments = _validate_object_key(
+            key, allowed_prefixes=(ObjectKeyLayout.ASSET_PREFIX,)
+        )
 
         params: dict[str, Any] = {
             "Bucket": self._bucket_name,
@@ -150,7 +148,7 @@ class FileObjectStorage:
             "ResponseCacheControl": PRIVATE_ASSET_CACHE_CONTROL,
         }
         # 原文件读取强制以附件形式下载，防止浏览器内联执行不可信内容
-        if len(segments) >= 4 and segments[3] == ORIGINAL_ASSET_SEGMENT:
+        if len(segments) >= 4 and segments[3] == ObjectKeyLayout.ORIGINAL_SEGMENT:
             params["ResponseContentDisposition"] = ORIGINAL_CONTENT_DISPOSITION
 
         url: str = await self._signing_client.generate_presigned_url(
@@ -164,7 +162,11 @@ class FileObjectStorage:
     async def head(self, key: str) -> ObjectMetadata | None:
         """查询 uploads/ 或 assets/ 对象的元信息，对象缺失返回 None"""
         _validate_object_key(
-            key, allowed_prefixes=(UPLOAD_KEY_PREFIX, ASSET_KEY_PREFIX)
+            key,
+            allowed_prefixes=(
+                ObjectKeyLayout.UPLOAD_PREFIX,
+                ObjectKeyLayout.ASSET_PREFIX,
+            ),
         )
 
         try:
@@ -186,7 +188,7 @@ class FileObjectStorage:
 
     async def delete_upload(self, key: str) -> None:
         """删除 uploads/ 暂存对象，成功或对象已缺失均返回 None"""
-        _validate_object_key(key, allowed_prefixes=(UPLOAD_KEY_PREFIX,))
+        _validate_object_key(key, allowed_prefixes=(ObjectKeyLayout.UPLOAD_PREFIX,))
 
         try:
             await self._client.delete_object(
