@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Hoshi FastAPI backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "aiobotocore",
     "alembic>=1.20.1",
     "fastapi>=0.163.1",
     "fastapi-pagination[sqlalchemy]>=0.16.2,<0.17",

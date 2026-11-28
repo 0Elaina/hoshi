@@ -2,7 +2,7 @@ import base64
 import binascii
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -38,13 +38,6 @@ class Settings(BaseSettings):
     jwt_admin_refresh_ttl: int = Field(default=86400, ge=1)
     jwt_user_refresh_ttl: int = Field(default=2592000, ge=1)
 
-    # Rustfs
-    s3_endpoint_url: AnyHttpUrl = AnyHttpUrl("http://127.0.0.1:9000")
-    s3_region: str = Field(default="us-east-1", min_length=1)
-    s3_bucket: str = Field(default="hoshi-media", min_length=1)
-    s3_access_key: SecretStr | None = None
-    s3_secret_key: SecretStr | None = None
-
     def database_url(self) -> URL:
         return URL.create(
             "postgresql+psycopg",
@@ -67,24 +60,3 @@ class Settings(BaseSettings):
         if len(key_bytes) < 32:
             raise ValueError("JWT 密钥解码后长度不能少于 32 字节")
         return key_bytes
-
-    def s3_credentials(self) -> tuple[str, str]:
-        access_key = (
-            ""
-            if self.s3_access_key is None
-            else self.s3_access_key.get_secret_value().strip()
-        )
-        secret_key = (
-            ""
-            if self.s3_secret_key is None
-            else self.s3_secret_key.get_secret_value().strip()
-        )
-        missing: list[str] = []
-        if not access_key:
-            missing.append("HOSHI_S3_ACCESS_KEY")
-        if not secret_key:
-            missing.append("HOSHI_S3_SECRET_KEY")
-
-        if missing:
-            raise ValueError(f"缺少 RustFS 对象存储凭据: {', '.join(missing)}")
-        return access_key, secret_key
