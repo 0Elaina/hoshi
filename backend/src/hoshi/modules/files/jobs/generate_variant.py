@@ -20,7 +20,7 @@ from hoshi.modules.files.jobs.common import (
     commit_job_failure,
     commit_job_succeeded,
 )
-from hoshi.modules.files.jobs.media import ImageValidationError, render_image_variant
+from hoshi.modules.files.jobs.media import render_image_variant
 from hoshi.modules.files.jobs.policy import (
     JobExecutionResult,
     JobOutcomeKind,
@@ -29,7 +29,7 @@ from hoshi.modules.files.jobs.policy import (
 from hoshi.modules.files.object_keys import build_variant_key
 from hoshi.modules.files.repositories.jobs import ClaimedFileJob
 from hoshi.modules.files.repositories.variants import FileVariantRepository
-from hoshi.modules.files.storage.worker import ObjectTooLargeError, WorkerObjectStorage
+from hoshi.modules.files.storage.worker import ObjectReadTooLarge, WorkerObjectStorage
 
 logger = logging.getLogger(__name__)
 
@@ -133,53 +133,56 @@ class GenerateVariantHandler:
 
         try:
             async with asyncio.timeout(budget.run_timeout_seconds):
-                raw_bytes = await self._storage.get_object_bytes(
+                read_result = await self._storage.get_object_bytes(
                     bucket=snapshot.original_bucket,
                     key=snapshot.original_key,
                     max_bytes=FileUploadConfig.IMAGE_MAX_SIZE_BYTES,
                 )
-                rendered = await asyncio.to_thread(
-                    render_image_variant, raw_bytes, preset=preset
-                )
-
-                # 写入公开桶前二次复核规格未被撤回，防止已撤回产物进入匿名可读公开桶
-                if is_public:
-                    async with self._session_factory() as session, session.begin():
-                        still_valid = await FileVariantRepository(
-                            session
-                        ).is_variant_still_unavailable(snapshot.variant_id)
-                    if not still_valid:
-                        skipped_before_write = True
-
-                if not skipped_before_write:
-                    await self._storage.put_object_bytes(
-                        bucket=target_bucket,
-                        key=target_key,
-                        data=rendered.data,
-                        content_type=rendered.content_type,
-                        cache_control=cache_control,
+                if isinstance(read_result, ObjectReadTooLarge):
+                    result = JobExecutionResult(
+                        outcome=JobOutcomeKind.PERMANENT_FAILURE,
+                        error_code="ORIGINAL_TOO_LARGE",
+                        error_summary=(
+                            f"原件体积超出允许上限 {read_result.max_bytes} 字节"
+                        ),
                     )
-                    rendered_content_type = rendered.content_type
-                    rendered_size_bytes = rendered.size_bytes
-                    rendered_width = rendered.width
-                    rendered_height = rendered.height
-                result = JobExecutionResult(outcome=JobOutcomeKind.SUCCEEDED)
+                else:
+                    rendered = await asyncio.to_thread(
+                        render_image_variant, read_result, preset=preset
+                    )
+                    if isinstance(rendered, JobExecutionResult):
+                        result = rendered
+                    else:
+                        # 写入公开桶前二次复核规格未被撤回，防止已撤回产物进入匿名可读公开桶
+                        if is_public:
+                            async with (
+                                self._session_factory() as session,
+                                session.begin(),
+                            ):
+                                still_valid = await FileVariantRepository(
+                                    session
+                                ).is_variant_still_unavailable(snapshot.variant_id)
+                            if not still_valid:
+                                skipped_before_write = True
+
+                        if not skipped_before_write:
+                            await self._storage.put_object_bytes(
+                                bucket=target_bucket,
+                                key=target_key,
+                                data=rendered.data,
+                                content_type=rendered.content_type,
+                                cache_control=cache_control,
+                            )
+                            rendered_content_type = rendered.content_type
+                            rendered_size_bytes = rendered.size_bytes
+                            rendered_width = rendered.width
+                            rendered_height = rendered.height
+                        result = JobExecutionResult(outcome=JobOutcomeKind.SUCCEEDED)
         except TimeoutError:
             result = JobExecutionResult(
                 outcome=JobOutcomeKind.RETRYABLE_FAILURE,
                 error_code="JOB_RUN_TIMEOUT",
                 error_summary=f"规格生成超过运行预算 {budget.run_timeout_seconds} 秒",
-            )
-        except (ObjectTooLargeError, ImageValidationError) as exc:
-            error_code = (
-                exc.error_code
-                if isinstance(exc, ImageValidationError)
-                else "ORIGINAL_TOO_LARGE"
-            )
-            result = JobExecutionResult(
-                outcome=JobOutcomeKind.PERMANENT_FAILURE,
-                error_code=error_code,
-                error_summary=str(exc),
             )
         except ClientError as exc:
             result = classify_client_error(exc)

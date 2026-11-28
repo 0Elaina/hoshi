@@ -60,6 +60,12 @@ class FileVariantService:
         _validate_uuid4(asset_id, message="资产 ID 无效")
         if not isinstance(visibility, FileVariantVisibility):
             raise BusinessException(CommonApiCode.INVALID_ARGUMENT, "可见性参数无效")
+        # 申请公开规格前先验证公开交付基址已配置，避免把无法交付的对象写入公开桶
+        if (
+            visibility == FileVariantVisibility.PUBLIC
+            and self._public_media_base_url is None
+        ):
+            raise BusinessException(CommonApiCode.STORAGE_UNAVAILABLE)
 
         created_job_id: int | None = None
         variant: VariantRecord | None = None
@@ -197,3 +203,30 @@ class FileVariantService:
                 )
 
         return withdrawn_ids
+
+    async def retry_failed_variant_cleanups(
+        self, variant_ids: Sequence[UUID]
+    ) -> list[int]:
+        """显式重试已撤回但删源失败的规格清理任务，保留历史失败诊断记录"""
+        unique_ids = list(
+            dict.fromkeys(
+                _validate_uuid4(vid, message="规格 ID 无效") for vid in variant_ids
+            )
+        )
+        if not unique_ids:
+            return []
+
+        async with self._session.begin():
+            created_job_ids = await self._repository.retry_failed_variant_cleanups(
+                variant_ids=unique_ids,
+                now=utc_now(),
+            )
+
+        # 仅对本事务新登记的清理任务触发快速唤醒
+        if self._wakeup_publisher is not None:
+            for job_id in created_job_ids:
+                self._wakeup_publisher.schedule_wakeup(
+                    job_id, FileJobType.CLEANUP_VARIANT
+                )
+
+        return created_job_ids

@@ -307,6 +307,75 @@ class FileVariantRepository:
         created_job_ids = list((await self._session.scalars(insert_stmt)).all())
         return withdrawn_ids, created_job_ids
 
+    async def retry_failed_variant_cleanups(
+        self, *, variant_ids: Sequence[UUID], now: datetime
+    ) -> list[int]:
+        """为已撤回且删源失败（且尚未删源成功）的规格补建 0 次尝试的 cleanup_variant 任务，保留历史失败记录"""
+        if not variant_ids:
+            return []
+
+        # 仅选中存在 failed 删源历史且从未 succeeded 的已撤回规格，避免重复清理已成功对象
+        has_failed_cleanup = (
+            select(1)
+            .where(
+                FileJob.variant_id == FileVariant.id,
+                FileJob.job_type == FileJobType.CLEANUP_VARIANT.value,
+                FileJob.status == FileJobStatus.FAILED.value,
+            )
+            .exists()
+        )
+        has_succeeded_cleanup = (
+            select(1)
+            .where(
+                FileJob.variant_id == FileVariant.id,
+                FileJob.job_type == FileJobType.CLEANUP_VARIANT.value,
+                FileJob.status == FileJobStatus.SUCCEEDED.value,
+            )
+            .exists()
+        )
+        candidates_stmt = select(FileVariant.id, FileVariant.asset_id).where(
+            FileVariant.id.in_(variant_ids),
+            FileVariant.status == FileVariantStatus.WITHDRAWN.value,
+            FileVariant.bucket.is_not(None),
+            FileVariant.object_key.is_not(None),
+            has_failed_cleanup,
+            ~has_succeeded_cleanup,
+        )
+        rows = (await self._session.execute(candidates_stmt)).all()
+        if not rows:
+            return []
+
+        next_wakeup = now + timedelta(
+            seconds=FileJobTiming.MQ_INITIAL_WAKEUP_DELAY_SECONDS
+        )
+        cleanup_values = [
+            {
+                "asset_id": row.asset_id,
+                "variant_id": row.id,
+                "job_type": FileJobType.CLEANUP_VARIANT.value,
+                "status": FileJobStatus.PENDING.value,
+                "available_at": now,
+                "next_wakeup_at": next_wakeup,
+                "attempt_count": 0,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for row in rows
+        ]
+        # 复用活跃任务部分唯一索引去重，并发重试不会产生重复的 pending/running 任务
+        insert_stmt = (
+            pg_insert(FileJob)
+            .values(cleanup_values)
+            .on_conflict_do_nothing(
+                index_elements=["variant_id", "job_type"],
+                index_where=text(
+                    "variant_id IS NOT NULL AND status IN ('pending', 'running')"
+                ),
+            )
+            .returning(FileJob.id)
+        )
+        return list((await self._session.scalars(insert_stmt)).all())
+
     async def get_variant_generation_snapshot(
         self, variant_id: UUID
     ) -> VariantGenerationSnapshot | None:

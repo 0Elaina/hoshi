@@ -73,9 +73,16 @@ def _make_message_handler(
 
         if should_ack:
             await message.ack()
-        else:
-            # 仅在数据库提交失败等未落定场景下 NACK 重投
+        elif not message.redelivered:
+            # 首次遇到数据库未落定允许一次快速重投，覆盖短暂抖动
             await message.nack(requeue=True)
+        else:
+            # 已重投仍失败时停止立即循环重投，交由数据库补发与超时回收接管
+            logger.warning(
+                "唤醒消息重投后仍未能提交数据库，停止立即重投并交由维护循环兜底: job_id=%s",
+                job_id,
+            )
+            await message.ack()
 
     return _on_message
 
@@ -97,6 +104,13 @@ async def run_files_worker(
     if ("media" in roles or "cleanup" in roles) and rabbitmq_settings is None:
         raise RuntimeError(
             "启动 media/cleanup 消费者前必须配置 RabbitMQ（HOSHI_RABBITMQ_*）"
+        )
+
+    # 启用 CDN 清理的维护进程必须注入具体供应商适配器，否则启动阶段即失败
+    if "sweeper" in roles and settings.cdn_purge_enabled and cdn_purge_adapter is None:
+        raise RuntimeError(
+            "启用 HOSHI_CDN_PURGE_ENABLED 时，sweeper 角色必须注入具体的 CdnPurgeAdapter；"
+            "未接入供应商前请保持 HOSHI_CDN_PURGE_ENABLED=false 或仅以 --roles media,cleanup 运行"
         )
 
     stop_event = asyncio.Event()
@@ -204,20 +218,14 @@ async def run_files_worker(
             if "sweeper" in roles:
                 cdn_batch_handler: CdnBatchHandler | None = None
                 if settings.cdn_purge_enabled:
-                    if (
-                        cdn_purge_adapter is not None
-                        and settings.public_media_base_url is not None
-                    ):
-                        cdn_processor = CdnPurgeBatchProcessor(
-                            session_factory=session_factory,
-                            adapter=cdn_purge_adapter,
-                            public_media_base_url=settings.public_media_base_url,
-                        )
-                        cdn_batch_handler = cdn_processor.run_one_batch
-                    else:
-                        logger.warning(
-                            "已启用 HOSHI_CDN_PURGE_ENABLED 但尚未注入具体 CDN 供应商适配器，暂不消费 purge_variant_cache"
-                        )
+                    assert cdn_purge_adapter is not None
+                    assert settings.public_media_base_url is not None
+                    cdn_processor = CdnPurgeBatchProcessor(
+                        session_factory=session_factory,
+                        adapter=cdn_purge_adapter,
+                        public_media_base_url=settings.public_media_base_url,
+                    )
+                    cdn_batch_handler = cdn_processor.run_one_batch
 
                 sweeper = FileMaintenanceSweeper(
                     session_factory=session_factory,

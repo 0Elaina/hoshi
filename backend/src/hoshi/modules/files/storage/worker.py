@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 
 from aiobotocore.client import AioBaseClient
@@ -23,8 +24,12 @@ _RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 _RETRYABLE_ERROR_CODES = frozenset({"SlowDown", "RequestTimeout", "ServiceUnavailable"})
 
 
-class ObjectTooLargeError(Exception):
-    """对象实际读取字节数超出安全上限"""
+@dataclass(frozen=True, slots=True)
+class ObjectReadTooLarge:
+    """流式读取对象超出最大字节数时的结构化结果（避免用自定义异常表达可预期拒绝）"""
+
+    max_bytes: int
+    read_bytes: int
 
 
 def is_precondition_failed(exc: ClientError) -> bool:
@@ -80,8 +85,8 @@ class WorkerObjectStorage:
         key: str,
         if_match: str | None = None,
         max_bytes: int | None = None,
-    ) -> bytes:
-        """按分块读取对象字节，支持 If-Match 条件读取与最大字节数防 OOM 保护"""
+    ) -> bytes | ObjectReadTooLarge:
+        """按分块读取对象字节，超限时返回结构化 ObjectReadTooLarge 而不抛自定义异常"""
         params: dict[str, Any] = {"Bucket": bucket, "Key": key}
         if if_match is not None:
             params["IfMatch"] = if_match
@@ -96,9 +101,12 @@ class WorkerObjectStorage:
                 if not chunk:
                     break
                 total_read += len(chunk)
-                # 流式读取阶段即截断超限载荷，防止恶意大对象撑爆 Worker 内存
+                # 流式读取阶段即截断超限载荷并返回结构化结果，防止大对象撑爆 Worker 内存
                 if max_bytes is not None and total_read > max_bytes:
-                    raise ObjectTooLargeError(f"对象体积超出允许上限 {max_bytes} 字节")
+                    return ObjectReadTooLarge(
+                        max_bytes=max_bytes,
+                        read_bytes=total_read,
+                    )
                 chunks.append(chunk)
         finally:
             body.close()

@@ -113,16 +113,34 @@ class FileMaintenanceSweeper:
             except Exception:
                 logger.exception("清理成功文件任务历史异常")
 
-        # 3. 独立运行 MQ 补发（独立会话与短事务）
-        if self._publisher is not None and time.monotonic() < deadline:
-            await self._run_mq_wakeup_batches(deadline)
+        # 3. 并行运行 MQ 补发与 CDN 批领（各自使用独立会话），由外层落实单轮 30 秒总预算
+        remaining_budget = deadline - time.monotonic()
+        if remaining_budget > 0:
+            dispatch_coroutines: list[Awaitable[None]] = []
+            if self._publisher is not None:
+                dispatch_coroutines.append(self._run_mq_wakeup_batches(deadline))
+            if self._cdn_batch_handler is not None:
+                dispatch_coroutines.append(self._run_cdn_batch())
 
-        # 4. 独立运行 CDN 批领（每轮至多一次批量 HTTP 清理请求）
-        if self._cdn_batch_handler is not None and time.monotonic() < deadline:
-            try:
-                await self._cdn_batch_handler()
-            except Exception:
-                logger.exception("CDN 批量清理轮次异常")
+            if dispatch_coroutines:
+                try:
+                    async with asyncio.timeout(remaining_budget):
+                        await asyncio.gather(*dispatch_coroutines)
+                except TimeoutError:
+                    logger.warning(
+                        "文件维护轮次达到 %.1fs 总预算，结束本轮剩余派发",
+                        self._round_budget_seconds,
+                    )
+
+    async def _run_cdn_batch(self) -> None:
+        """隔离执行单轮 CDN 批领异常，避免影响并行 MQ 补发"""
+        assert self._cdn_batch_handler is not None
+        try:
+            await self._cdn_batch_handler()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("CDN 批量清理轮次异常")
 
     async def _run_mq_wakeup_batches(self, deadline: float) -> None:
         """循环按批领取待补发 MQ 任务并并发发布，遇空批、整批失败或预算耗尽立即停止"""

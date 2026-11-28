@@ -5,6 +5,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from hoshi.modules.files.constants import FileUploadConfig
 from hoshi.modules.files.enums import ImagePreset, MediaFormat, MediaKind
+from hoshi.modules.files.jobs.policy import JobExecutionResult, JobOutcomeKind
 
 # 图片解码安全阈值，防范解压炸弹与异常超高分辨率
 MAX_IMAGE_PIXELS = 25_000_000
@@ -30,13 +31,20 @@ class RenderedImageVariant:
     height: int
 
 
-class ImageValidationError(Exception):
-    """图片内容校验拒绝异常，供 Worker 映射为 validation_rejected"""
+def _rejected(error_code: str, summary: str) -> JobExecutionResult:
+    return JobExecutionResult(
+        outcome=JobOutcomeKind.VALIDATION_REJECTED,
+        error_code=error_code,
+        error_summary=summary,
+    )
 
-    def __init__(self, error_code: str, summary: str) -> None:
-        self.error_code = error_code
-        self.summary = summary
-        super().__init__(summary)
+
+def _permanent_failure(error_code: str, summary: str) -> JobExecutionResult:
+    return JobExecutionResult(
+        outcome=JobOutcomeKind.PERMANENT_FAILURE,
+        error_code=error_code,
+        error_summary=summary,
+    )
 
 
 def validate_image_bytes(
@@ -44,16 +52,16 @@ def validate_image_bytes(
     *,
     declared_content_type: str,
     declared_size_bytes: int,
-) -> ValidatedImageInfo:
-    """同步校验图片实际体积、分辨率安全边界与 Pillow 完整解码一致性"""
+) -> ValidatedImageInfo | JobExecutionResult:
+    """同步校验图片实际体积、分辨率安全边界与 Pillow 完整解码一致性，内容拒绝直接返回结构化结果"""
     actual_size = len(data)
     if actual_size <= 0 or actual_size != declared_size_bytes:
-        raise ImageValidationError(
+        return _rejected(
             "IMAGE_SIZE_MISMATCH",
             f"实际大小 {actual_size} 与登记大小 {declared_size_bytes} 不符",
         )
     if actual_size > FileUploadConfig.IMAGE_MAX_SIZE_BYTES:
-        raise ImageValidationError(
+        return _rejected(
             "IMAGE_TOO_LARGE",
             f"实际大小 {actual_size} 超出上限 {FileUploadConfig.IMAGE_MAX_SIZE_BYTES}",
         )
@@ -68,7 +76,7 @@ def validate_image_bytes(
                 or detected_format.media_kind != MediaKind.IMAGE
                 or detected_format.mime_type != declared_content_type
             ):
-                raise ImageValidationError(
+                return _rejected(
                     "IMAGE_FORMAT_MISMATCH",
                     f"检测到格式 {detected_format_name or 'unknown'} 与声明 {declared_content_type} 不符",
                 )
@@ -81,14 +89,12 @@ def validate_image_bytes(
                 or height > MAX_IMAGE_DIMENSION
                 or width * height > MAX_IMAGE_PIXELS
             ):
-                raise ImageValidationError(
+                return _rejected(
                     "IMAGE_DIMENSIONS_EXCEEDED",
                     f"图片尺寸 {width}x{height} 超出安全限制",
                 )
 
             probe.verify()
-    except ImageValidationError:
-        raise
     except (
         UnidentifiedImageError,
         Image.DecompressionBombError,
@@ -96,9 +102,7 @@ def validate_image_bytes(
         SyntaxError,
         ValueError,
     ) as exc:
-        raise ImageValidationError(
-            "IMAGE_DECODE_FAILED", f"图片结构校验失败: {exc}"
-        ) from None
+        return _rejected("IMAGE_DECODE_FAILED", f"图片结构校验失败: {exc}")
 
     # verify() 后须重新打开并触发全量像素解码，拦截截断或损坏帧
     try:
@@ -111,9 +115,7 @@ def validate_image_bytes(
         SyntaxError,
         ValueError,
     ) as exc:
-        raise ImageValidationError(
-            "IMAGE_DECODE_FAILED", f"图片像素解码失败: {exc}"
-        ) from None
+        return _rejected("IMAGE_DECODE_FAILED", f"图片像素解码失败: {exc}")
 
     return ValidatedImageInfo(
         content_type=declared_content_type,
@@ -125,8 +127,8 @@ def validate_image_bytes(
 
 def render_image_variant(
     raw_bytes: bytes, *, preset: ImagePreset
-) -> RenderedImageVariant:
-    """按已登记图片规格对私有原件执行 EXIF 纠正、元数据剥离与统一编码"""
+) -> RenderedImageVariant | JobExecutionResult:
+    """按已登记图片规格对私有原件执行 EXIF 纠正、元数据剥离与统一编码，失败返回结构化结果"""
     try:
         with Image.open(BytesIO(raw_bytes)) as opened:
             # 纠正 EXIF 旋转方向并强制加载像素
@@ -139,7 +141,7 @@ def render_image_variant(
                 or height > MAX_IMAGE_DIMENSION
                 or width * height > MAX_IMAGE_PIXELS
             ):
-                raise ImageValidationError(
+                return _permanent_failure(
                     "IMAGE_DIMENSIONS_EXCEEDED",
                     f"原图尺寸 {width}x{height} 超出渲染安全限制",
                 )
@@ -164,8 +166,6 @@ def render_image_variant(
                 **save_kwargs,
             )
             encoded = output.getvalue()
-    except ImageValidationError:
-        raise
     except (
         UnidentifiedImageError,
         Image.DecompressionBombError,
@@ -173,9 +173,7 @@ def render_image_variant(
         SyntaxError,
         ValueError,
     ) as exc:
-        raise ImageValidationError(
-            "IMAGE_RENDER_FAILED", f"图片规格渲染失败: {exc}"
-        ) from None
+        return _permanent_failure("IMAGE_RENDER_FAILED", f"图片规格渲染失败: {exc}")
 
     return RenderedImageVariant(
         data=encoded,

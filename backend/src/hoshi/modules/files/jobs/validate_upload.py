@@ -13,7 +13,7 @@ from hoshi.modules.files.jobs.common import (
     classify_client_error,
     commit_job_failure,
 )
-from hoshi.modules.files.jobs.media import ImageValidationError, validate_image_bytes
+from hoshi.modules.files.jobs.media import validate_image_bytes
 from hoshi.modules.files.jobs.policy import (
     JobExecutionResult,
     JobOutcomeKind,
@@ -24,7 +24,7 @@ from hoshi.modules.files.object_keys import build_original_key, build_upload_key
 from hoshi.modules.files.repositories.assets import FileAssetRepository
 from hoshi.modules.files.repositories.jobs import ClaimedFileJob
 from hoshi.modules.files.storage.worker import (
-    ObjectTooLargeError,
+    ObjectReadTooLarge,
     WorkerObjectStorage,
     is_object_missing_error,
     is_precondition_failed,
@@ -102,46 +102,48 @@ class ValidateUploadHandler:
                         error_summary=f"暂不支持校验媒体类型 {snapshot.media_kind.value}",
                     )
                 else:
-                    raw_bytes = await self._storage.get_object_bytes(
+                    read_result = await self._storage.get_object_bytes(
                         bucket=self._storage.private_bucket,
                         key=upload_key,
                         if_match=snapshot.upload_etag,
                         max_bytes=FileUploadConfig.IMAGE_MAX_SIZE_BYTES,
                     )
-                    validated = await asyncio.to_thread(
-                        validate_image_bytes,
-                        raw_bytes,
-                        declared_content_type=snapshot.declared_content_type,
-                        declared_size_bytes=snapshot.declared_size_bytes,
-                    )
-                    original_key = build_original_key(
-                        snapshot.media_kind, snapshot.id, uuid4()
-                    )
-                    await self._storage.put_object_bytes(
-                        bucket=self._storage.private_bucket,
-                        key=original_key,
-                        data=raw_bytes,
-                        content_type=validated.content_type,
-                    )
-                    written_original_key = original_key
-                    result = JobExecutionResult(outcome=JobOutcomeKind.SUCCEEDED)
+                    if isinstance(read_result, ObjectReadTooLarge):
+                        result = JobExecutionResult(
+                            outcome=JobOutcomeKind.VALIDATION_REJECTED,
+                            error_code="IMAGE_TOO_LARGE",
+                            error_summary=(
+                                f"对象体积超出允许上限 {read_result.max_bytes} 字节"
+                            ),
+                        )
+                    else:
+                        validated = await asyncio.to_thread(
+                            validate_image_bytes,
+                            read_result,
+                            declared_content_type=snapshot.declared_content_type,
+                            declared_size_bytes=snapshot.declared_size_bytes,
+                        )
+                        if isinstance(validated, JobExecutionResult):
+                            result = validated
+                        else:
+                            original_key = build_original_key(
+                                snapshot.media_kind, snapshot.id, uuid4()
+                            )
+                            await self._storage.put_object_bytes(
+                                bucket=self._storage.private_bucket,
+                                key=original_key,
+                                data=read_result,
+                                content_type=validated.content_type,
+                            )
+                            written_original_key = original_key
+                            result = JobExecutionResult(
+                                outcome=JobOutcomeKind.SUCCEEDED
+                            )
         except TimeoutError:
             result = JobExecutionResult(
                 outcome=JobOutcomeKind.RETRYABLE_FAILURE,
                 error_code="JOB_RUN_TIMEOUT",
                 error_summary=f"原件校验超过运行预算 {budget.run_timeout_seconds} 秒",
-            )
-        except ObjectTooLargeError as exc:
-            result = JobExecutionResult(
-                outcome=JobOutcomeKind.VALIDATION_REJECTED,
-                error_code="IMAGE_TOO_LARGE",
-                error_summary=str(exc),
-            )
-        except ImageValidationError as exc:
-            result = JobExecutionResult(
-                outcome=JobOutcomeKind.VALIDATION_REJECTED,
-                error_code=exc.error_code,
-                error_summary=exc.summary,
             )
         except ClientError as exc:
             # S3 If-Match 返回 412 直接永久拒绝资产并记录 UPLOAD_ETAG_MISMATCH

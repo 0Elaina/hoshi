@@ -140,7 +140,8 @@ uv run --locked python -m hoshi.workers.files --roles media,cleanup,sweeper
 
 - **队列隔离**：按 `HOSHI_APP_ENV` 声明两条 durable 队列：`hoshi.{app_env}.files.media`（`validate_upload`、`generate_variant`）和 `hoshi.{app_env}.files.cleanup`（`cleanup_variant`），上限 `x-max-length=10000`、溢出策略 `reject-publish`，持久化消息体仅含 `{"job_id": <int>}`。
 - **快速路径与补发**：Web 进程以非阻塞方式维护单条 `aio-pika` robust 连接与带发布确认（`publisher_confirms=True`、`mandatory=True`、`on_return_raises=True`）的发布通道，最多 8 个在途后台发布、单次超时 2 秒；Broker 未就绪或容量满时由数据库补发接管。
-- **分钟维护循环**：通过 `SET hoshi:files:sweeper:{app_env}:lock <token> NX EX 55` 抢占自然到期的分钟租约（单轮总预算 30 秒），依次回收超时 `running` 任务、清理超 30 天 `succeeded` 历史、按批补发 MQ 唤醒任务，并直接从 PostgreSQL 批领到期 `purge_variant_cache`（默认每轮最多 30 条去重 URL，单次 10 秒超时 HTTP 清理请求）。
+- **分钟维护循环**：通过 `SET hoshi:files:sweeper:{app_env}:lock <token> NX EX 55` 抢占自然到期的分钟租约（单轮总预算 30 秒），依次回收超时 `running` 任务、清理超 30 天 `succeeded` 历史，随后并行运行 MQ 唤醒补发与直接从 PostgreSQL 批领到期 `purge_variant_cache`（默认每轮最多 30 条去重 URL，单次 10 秒超时 HTTP 清理请求）。
+- **CDN 清理启动前提**：当 `HOSHI_CDN_PURGE_ENABLED=true` 时，启用 `sweeper` 角色的进程必须经由注入具体 `CdnPurgeAdapter` 的引导入口启动，否则启动阶段会直接报错退出；默认 CLI 入口在未接入供应商前仅支持 `HOSHI_CDN_PURGE_ENABLED=false` 或 `--roles media,cleanup`。
 
 ## Hoshi 数据库
 
