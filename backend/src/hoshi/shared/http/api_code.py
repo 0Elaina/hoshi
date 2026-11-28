@@ -24,3 +24,11 @@ class CommonApiCode:
     INTERNAL_ERROR = ApiCode(
         status.HTTP_500_INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "服务器内部错误"
     )
+    STORAGE_BAD_GATEWAY = ApiCode(
+        status.HTTP_502_BAD_GATEWAY, "STORAGE_BAD_GATEWAY", "对象存储服务响应异常"
+    )
+    STORAGE_UNAVAILABLE = ApiCode(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "STORAGE_UNAVAILABLE",
+        "对象存储服务暂时不可用",
+    )

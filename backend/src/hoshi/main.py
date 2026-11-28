@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
+from aiobotocore.session import get_session
 from fastapi import FastAPI, Request, Response
 from redis.asyncio import Redis
 
@@ -9,8 +10,10 @@ from hoshi.api.v1.admin import admin_api
 from hoshi.core.config import Settings
 from hoshi.core.logging import configure_logging
 from hoshi.db.session import create_db_engine, create_session_factory
+from hoshi.infra.s3 import create_s3_client
 from hoshi.modules.auth.jwt import JwtService
 from hoshi.modules.auth.rate_limit import LoginRateLimiter
+from hoshi.modules.files.storage import FileObjectStorage
 
 AUTH_NO_STORE_PREFIXS = ("/api/v1/admin/auth", "/api/v1/auth/")
 
@@ -37,16 +40,56 @@ def create_app() -> FastAPI:
         try:
             app.state.session_factory = create_session_factory(engine)
             password = settings.redis_password
-            async with Redis(
-                host=settings.redis_host,
-                port=settings.redis_port,
-                db=0,
-                password=password.get_secret_value() if password else None,
-                socket_connect_timeout=2.0,
-                socket_timeout=2.0,
-            ) as redis:
+            async with AsyncExitStack() as stack:
+                redis = await stack.enter_async_context(
+                    Redis(
+                        host=settings.redis_host,
+                        port=settings.redis_port,
+                        db=0,
+                        password=password.get_secret_value() if password else None,
+                        socket_connect_timeout=2.0,
+                        socket_timeout=2.0,
+                    )
+                )
                 app.state.redis = redis
                 app.state.login_rate_limiter = LoginRateLimiter(redis)
+
+                s3_settings = settings.s3_config()
+                if s3_settings is not None:
+                    s3_session = get_session()
+                    s3_client = await stack.enter_async_context(
+                        create_s3_client(
+                            endpoint_url=s3_settings.endpoint_url,
+                            region_name=s3_settings.region,
+                            access_key=s3_settings.access_key,
+                            secret_key=s3_settings.secret_key,
+                            session=s3_session,
+                        )
+                    )
+                    if s3_settings.signing_endpoint_url == s3_settings.endpoint_url:
+                        s3_signing_client = s3_client
+                    else:
+                        s3_signing_client = await stack.enter_async_context(
+                            create_s3_client(
+                                endpoint_url=s3_settings.signing_endpoint_url,
+                                region_name=s3_settings.region,
+                                access_key=s3_settings.access_key,
+                                secret_key=s3_settings.secret_key,
+                                session=s3_session,
+                            )
+                        )
+                    app.state.s3_client = s3_client
+                    app.state.s3_signing_client = s3_signing_client
+                    app.state.file_storage = FileObjectStorage(
+                        s3_client,
+                        s3_signing_client,
+                        s3_settings.private_bucket,
+                    )
+                else:
+                    app.state.s3_client = None
+                    app.state.s3_signing_client = None
+                    app.state.file_storage = None
+
                 yield
         finally:
             await engine.dispose()

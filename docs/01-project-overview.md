@@ -16,7 +16,7 @@ Hoshi 是个人独立开发、长期维护、面向真实用户的多角色 AI �
 - **LangChain 与 LangGraph**。LangChain 提供 OpenAI 兼容多模型接入（支持按场景配置对话模型与 Embedding 模型）、统一消息内容块与工具调用抽象；LangGraph 编排有状态的陪伴对话工作流、情绪/关系状态流转与工具决策循环，并复用 PostgreSQL 16 作为 Checkpointer 持久化图运行状态与短期工作记忆。 [LangChain 文档](https://python.langchain.com/docs/introduction/) · [LangGraph 文档](https://langchain-ai.github.io/langgraph/)
 - **Qdrant 向量数据库**。本地复用共享 Qdrant 服务，按 `user_id`、`character_id` 与记忆类型隔离存储对话提炼出的长期情景记忆、用户事实与角色设定集（Lore），结合语义相似度与时间衰减进行召回。 [Qdrant 文档](https://qdrant.tech/documentation/)
 - **PostgreSQL 16、SQLAlchemy、Psycopg 3、Alembic**。SQLAlchemy 异步 ORM 与 Psycopg 负责业务关系数据（账号、会话、角色配置、展示消息、关系状态等）访问，Alembic 通过独立命令执行版本化迁移。表结构、约束和索引由迁移定义。 [SQLAlchemy 异步 ORM](https://docs.sqlalchemy.org/en/21/orm/extensions/asyncio.html) · [Alembic 迁移](https://alembic.sqlalchemy.org/en/latest/tutorial.html)
-- **Redis、对象存储与消息队列**。本地复用共享 Redis 7、RustFS 与 RabbitMQ。FastAPI 在应用生命周期内管理一个异步 redis-py 客户端，用于登录限流、流式控制锁与主动关怀防打扰冷却；RustFS S3 客户端随头像及多模态附件业务接入；异步记忆提炼与主动关怀等耗时后台任务按需通过消息队列或调度器解耦执行。 [redis-py 异步客户端](https://redis.io/docs/latest/develop/clients/redis-py/async/) · [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3)
+- **Redis、对象存储与消息队列**。本地复用共享 Redis 7、RustFS 与 RabbitMQ。FastAPI 在应用生命周期内管理异步 redis-py 客户端与 `aiobotocore` S3 异步客户端：Redis 用于登录限流、流式控制锁与主动关怀防打扰冷却；RustFS 采用私有桶/公开桶双桶隔离，Web 通过私有桶适配器提供直传预签名、私有读取签名与对象元信息维护；异步文件加工、记忆提炼与主动关怀等后台任务按需通过消息队列或调度器解耦执行。 [redis-py 异步客户端](https://redis.io/docs/latest/develop/clients/redis-py/async/) · [RustFS S3 接口](https://docs.rustfs.com/en/administration/protocols/s3) · [aiobotocore](https://aiobotocore.aio-libs.org/en/stable/tutorial.html)
 
 ### 实时通信
 
@@ -50,7 +50,7 @@ flowchart LR
     Agent -. LangGraph Checkpointer .-> Postgres
     Agent -. 长期记忆 / 设定集检索 .-> Qdrant
     Backend -->|redis-py| Redis
-    Backend -. S3 API，待业务接入 .-> RustFS
+    Backend -->|aiobotocore / S3 API| RustFS
     Backend -. 异步记忆 / 主动关怀，按需接入 .-> RabbitMQ
 ```
 
@@ -65,6 +65,7 @@ flowchart LR
 | `backend/src/hoshi/core/` | 应用配置和数据源连接配置 |
 | `backend/src/hoshi/api/` | FastAPI 集成、全局异常处理和请求依赖 |
 | `backend/src/hoshi/db/` | SQLAlchemy 声明式基类、引擎和会话工厂 |
+| `backend/src/hoshi/infra/` | 外部基础设施客户端工厂（如 `aiobotocore` S3 异步客户端） |
 | `backend/src/hoshi/shared/http/` | 各业务模块共享的 HTTP 响应、错误码、业务异常和分页契约 |
 | `backend/src/hoshi/shared/utils/` | 各业务模块实际复用的通用工具 |
 | `backend/src/hoshi/modules/` | 随功能接入建立的业务模块 |
