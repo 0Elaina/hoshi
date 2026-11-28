@@ -19,9 +19,10 @@ from hoshi.infra.rabbitmq import (
     decode_job_id,
 )
 from hoshi.infra.s3 import create_s3_client
+from hoshi.modules.files.cdn import CdnPurgeAdapter, CdnPurgeBatchProcessor
 from hoshi.modules.files.enums import FileJobType
 from hoshi.modules.files.job_runner import FileJobRunner
-from hoshi.modules.files.sweeper import FileMaintenanceSweeper
+from hoshi.modules.files.sweeper import CdnBatchHandler, FileMaintenanceSweeper
 from hoshi.modules.files.worker_storage import WorkerObjectStorage
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,11 @@ def _make_message_handler(
     return _on_message
 
 
-async def run_files_worker(*, roles: frozenset[str]) -> None:
+async def run_files_worker(
+    *,
+    roles: frozenset[str],
+    cdn_purge_adapter: CdnPurgeAdapter | None = None,
+) -> None:
     """装配数据库、Redis、S3 与 RabbitMQ 资源并运行文件后台 Worker"""
     settings = Settings()  # pyright: ignore
     configure_logging(settings)
@@ -147,6 +152,7 @@ async def run_files_worker(*, roles: frozenset[str]) -> None:
             runner = FileJobRunner(
                 session_factory=session_factory,
                 storage=worker_storage,
+                cdn_purge_enabled=settings.cdn_purge_enabled,
             )
 
             # 按需启动媒体与对象清理队列消费者
@@ -195,11 +201,29 @@ async def run_files_worker(*, roles: frozenset[str]) -> None:
 
             # 按需启动 1 分钟维护循环（超时回收、历史清理、MQ 补发与 CDN 批领）
             if "sweeper" in roles:
+                cdn_batch_handler: CdnBatchHandler | None = None
+                if settings.cdn_purge_enabled:
+                    if (
+                        cdn_purge_adapter is not None
+                        and settings.public_media_base_url is not None
+                    ):
+                        cdn_processor = CdnPurgeBatchProcessor(
+                            session_factory=session_factory,
+                            adapter=cdn_purge_adapter,
+                            public_media_base_url=settings.public_media_base_url,
+                        )
+                        cdn_batch_handler = cdn_processor.run_one_batch
+                    else:
+                        logger.warning(
+                            "已启用 HOSHI_CDN_PURGE_ENABLED 但尚未注入具体 CDN 供应商适配器，暂不消费 purge_variant_cache"
+                        )
+
                 sweeper = FileMaintenanceSweeper(
                     session_factory=session_factory,
                     redis=redis,
                     app_env=settings.app_env,
                     publisher=publisher,
+                    cdn_batch_handler=cdn_batch_handler,
                 )
                 background_tasks.append(
                     asyncio.create_task(sweeper.run_forever(stop_event))

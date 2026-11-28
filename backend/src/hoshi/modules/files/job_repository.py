@@ -1,15 +1,19 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import case, func, select, text, update
+from sqlalchemy import CursorResult, case, func, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hoshi.modules.files.enums import (
     FileAssetStatus,
     FileJobStatus,
     FileJobType,
+    FileVariantStatus,
+    FileVariantVisibility,
     MediaKind,
 )
 from hoshi.modules.files.job_policy import (
@@ -18,8 +22,9 @@ from hoshi.modules.files.job_policy import (
     MAX_JOB_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
     JobOutcomeKind,
+    compute_retry_delay_seconds,
 )
-from hoshi.modules.files.models import FileAsset, FileJob
+from hoshi.modules.files.models import FileAsset, FileJob, FileVariant
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +47,38 @@ class AssetValidationSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class VariantGenerationSnapshot:
+    variant_id: UUID
+    asset_id: UUID
+    preset_name: str
+    preset_revision: int
+    visibility: FileVariantVisibility
+    variant_status: FileVariantStatus
+    media_kind: MediaKind
+    asset_status: FileAssetStatus
+    original_bucket: str | None
+    original_key: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class VariantCleanupSnapshot:
+    variant_id: UUID
+    asset_id: UUID
+    visibility: FileVariantVisibility
+    status: FileVariantStatus
+    bucket: str | None
+    object_key: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedCdnPurgeJob:
+    id: int
+    variant_id: UUID
+    attempt_count: int
+    object_key: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ReclaimSummary:
     requeued_count: int
     failed_count: int
@@ -54,7 +91,7 @@ class WakeupJobItem:
 
 
 class FileJobRepository:
-    """文件后台任务领取、状态回写与维护扫描仓储"""
+    """文件后台任务领取、状态回写、维护扫描与 CDN 批领仓储"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -124,6 +161,91 @@ class FileJobRepository:
             upload_etag=row.upload_etag,
         )
 
+    async def get_variant_generation_snapshot(
+        self, variant_id: UUID
+    ) -> VariantGenerationSnapshot | None:
+        """短事务联表读取规格生成所需的规格与原件快照"""
+        stmt = (
+            select(
+                FileVariant.id.label("variant_id"),
+                FileVariant.asset_id,
+                FileVariant.preset_name,
+                FileVariant.preset_revision,
+                FileVariant.visibility,
+                FileVariant.status.label("variant_status"),
+                FileAsset.media_kind,
+                FileAsset.status.label("asset_status"),
+                FileAsset.original_bucket,
+                FileAsset.original_key,
+            )
+            .join(FileAsset, FileAsset.id == FileVariant.asset_id)
+            .where(FileVariant.id == variant_id)
+        )
+        row = (await self._session.execute(stmt)).one_or_none()
+        if row is None:
+            return None
+        return VariantGenerationSnapshot(
+            variant_id=row.variant_id,
+            asset_id=row.asset_id,
+            preset_name=row.preset_name,
+            preset_revision=row.preset_revision,
+            visibility=FileVariantVisibility(row.visibility),
+            variant_status=FileVariantStatus(row.variant_status),
+            media_kind=MediaKind(row.media_kind),
+            asset_status=FileAssetStatus(row.asset_status),
+            original_bucket=row.original_bucket,
+            original_key=row.original_key,
+        )
+
+    async def is_variant_still_unavailable(self, variant_id: UUID) -> bool:
+        """写入公开桶前二次确认规格仍处于可生成的 unavailable 状态"""
+        status_value = await self._session.scalar(
+            select(FileVariant.status).where(FileVariant.id == variant_id)
+        )
+        return status_value == FileVariantStatus.UNAVAILABLE.value
+
+    async def get_variant_cleanup_snapshot(
+        self, variant_id: UUID
+    ) -> VariantCleanupSnapshot | None:
+        """短事务读取删源所需的规格状态与对象位置"""
+        stmt = select(
+            FileVariant.id,
+            FileVariant.asset_id,
+            FileVariant.visibility,
+            FileVariant.status,
+            FileVariant.bucket,
+            FileVariant.object_key,
+        ).where(FileVariant.id == variant_id)
+        row = (await self._session.execute(stmt)).one_or_none()
+        if row is None:
+            return None
+        return VariantCleanupSnapshot(
+            variant_id=row.id,
+            asset_id=row.asset_id,
+            visibility=FileVariantVisibility(row.visibility),
+            status=FileVariantStatus(row.status),
+            bucket=row.bucket,
+            object_key=row.object_key,
+        )
+
+    async def complete_job_succeeded(self, *, job_id: int, attempt_count: int) -> bool:
+        """按尝试号保护将任务置为 succeeded（用于无需再生成的已就绪/已撤回规格）"""
+        stmt = (
+            update(FileJob)
+            .where(
+                FileJob.id == job_id,
+                FileJob.status == FileJobStatus.RUNNING.value,
+                FileJob.attempt_count == attempt_count,
+            )
+            .values(
+                status=FileJobStatus.SUCCEEDED.value,
+                last_error=None,
+                updated_at=func.current_timestamp(),
+            )
+            .returning(FileJob.id)
+        )
+        return (await self._session.scalar(stmt)) is not None
+
     async def complete_validate_upload_success(
         self,
         *,
@@ -151,7 +273,6 @@ class FileJobRepository:
             .returning(FileJob.id)
         )
         matched_job_id = await self._session.scalar(job_stmt)
-        # 尝试号不匹配说明任务已被超时回收或重跑，放弃写回资产
         if matched_job_id is None:
             return False
 
@@ -214,6 +335,117 @@ class FileJobRepository:
         await self._session.execute(asset_stmt)
         return True
 
+    async def complete_generate_variant_success(
+        self,
+        *,
+        job_id: int,
+        attempt_count: int,
+        variant_id: UUID,
+        bucket: str,
+        object_key: str,
+        content_type: str,
+        size_bytes: int,
+        width: int | None,
+        height: int | None,
+    ) -> bool:
+        """先锁规格再更新任务，仅当规格仍为 unavailable 且尝试号匹配时登记 ready"""
+        # 与规格申请保持一致的加锁顺序：同时涉及两张表时先锁 file_variants，避免死锁
+        variant = await self._session.scalar(
+            select(FileVariant).where(FileVariant.id == variant_id).with_for_update()
+        )
+        matched_job_id = await self._session.scalar(
+            update(FileJob)
+            .where(
+                FileJob.id == job_id,
+                FileJob.status == FileJobStatus.RUNNING.value,
+                FileJob.attempt_count == attempt_count,
+            )
+            .values(
+                status=FileJobStatus.SUCCEEDED.value,
+                last_error=None,
+                updated_at=func.current_timestamp(),
+            )
+            .returning(FileJob.id)
+        )
+        # 尝试号已失效，或规格已被撤回/已就绪时放弃登记，调用方随后清理孤儿对象
+        if (
+            matched_job_id is None
+            or variant is None
+            or variant.status != FileVariantStatus.UNAVAILABLE.value
+        ):
+            return False
+
+        await self._session.execute(
+            update(FileVariant)
+            .where(
+                FileVariant.id == variant_id,
+                FileVariant.status == FileVariantStatus.UNAVAILABLE.value,
+            )
+            .values(
+                status=FileVariantStatus.READY.value,
+                bucket=bucket,
+                object_key=object_key,
+                content_type=content_type,
+                size_bytes=size_bytes,
+                width=width,
+                height=height,
+                updated_at=func.current_timestamp(),
+            )
+        )
+        return True
+
+    async def complete_cleanup_variant_success(
+        self,
+        *,
+        job_id: int,
+        attempt_count: int,
+        asset_id: UUID,
+        variant_id: UUID,
+        enqueue_cdn_purge: bool,
+        now: datetime,
+    ) -> bool:
+        """删源成功后提交清理完成，并在同一事务按需为公开对象登记 purge_variant_cache"""
+        matched_job_id = await self._session.scalar(
+            update(FileJob)
+            .where(
+                FileJob.id == job_id,
+                FileJob.status == FileJobStatus.RUNNING.value,
+                FileJob.attempt_count == attempt_count,
+            )
+            .values(
+                status=FileJobStatus.SUCCEEDED.value,
+                last_error=None,
+                updated_at=func.current_timestamp(),
+            )
+            .returning(FileJob.id)
+        )
+        if matched_job_id is None:
+            return False
+
+        # 只有删源成功且启用 CDN 的公开对象，才登记立即可执行的 purge_variant_cache
+        if enqueue_cdn_purge:
+            await self._session.execute(
+                pg_insert(FileJob)
+                .values(
+                    asset_id=asset_id,
+                    variant_id=variant_id,
+                    job_type=FileJobType.PURGE_VARIANT_CACHE.value,
+                    status=FileJobStatus.PENDING.value,
+                    available_at=now,
+                    next_wakeup_at=now,
+                    attempt_count=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["variant_id", "job_type"],
+                    index_where=text(
+                        "variant_id IS NOT NULL AND status IN ('pending', 'running')"
+                    ),
+                )
+            )
+        return True
+
     async def complete_job_failure(
         self,
         *,
@@ -232,7 +464,6 @@ class FileJobRepository:
             and retry_delay_seconds is not None
         ):
             next_time = now + timedelta(seconds=retry_delay_seconds)
-            # 可重试失败同时推迟 available_at 与 next_wakeup_at
             retry_stmt = (
                 update(FileJob)
                 .where(
@@ -269,7 +500,6 @@ class FileJobRepository:
         if matched_job_id is None:
             return False
 
-        # 终态校验失败同步更新资产为 validation_failed
         if job_type == FileJobType.VALIDATE_UPLOAD:
             asset_stmt = (
                 update(FileAsset)
@@ -289,7 +519,6 @@ class FileJobRepository:
         self, *, now: datetime, limit: int = 100
     ) -> ReclaimSummary:
         """按统一预算策略回收超时 running 任务，第 3 次超时直接终态失败并同步更新校验资产"""
-        # 从同一份 JOB_BUDGET_POLICIES 构造 SQL CASE 阈值表达式，保证领取与回收口径一致
         specific_whens = [
             (
                 (FileJob.job_type == job_type.value)
@@ -310,7 +539,6 @@ class FileJobRepository:
             else_=DEFAULT_JOB_BUDGET.reclaim_after_seconds,
         )
 
-        # 利用 ix_file_jobs_running_or_succeeded 定位超时的 running 行并跳过已锁行
         cutoff_expr = func.current_timestamp() - (
             reclaim_seconds_expr * text("INTERVAL '1 second'")
         )
@@ -334,7 +562,6 @@ class FileJobRepository:
         if not rows:
             return ReclaimSummary(requeued_count=0, failed_count=0)
 
-        # 按尝试号分组执行集合写回：1/2 次按 30s/120s 退避重排，第 3 次直接终态失败
         requeue_by_delay: dict[int, list[int]] = {}
         terminal_job_ids: list[int] = []
         terminal_validate_asset_ids: list[UUID] = []
@@ -386,7 +613,6 @@ class FileJobRepository:
             )
             failed_count = len(terminal_job_ids)
 
-        # 终态校验任务与对应 pending_validation 资产在同一事务内集合更新
         if terminal_validate_asset_ids:
             await self._session.execute(
                 update(FileAsset)
@@ -420,8 +646,11 @@ class FileJobRepository:
             WHERE file_jobs.id = expired.id
             """
         )
-        result = await self._session.execute(
-            stmt, {"retention_days": retention_days, "limit": limit}
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                stmt, {"retention_days": retention_days, "limit": limit}
+            ),
         )
         return int(result.rowcount or 0)
 
@@ -429,7 +658,6 @@ class FileJobRepository:
         self, *, limit: int = 100, wakeup_delay_seconds: int = 180
     ) -> list[WakeupJobItem]:
         """按部分索引批量领取待补发的 MQ 任务并推迟 next_wakeup_at 3 分钟，保持 updated_at 不变"""
-        # 固定谓词与迁移部分索引 ix_file_jobs_pending_mq_wakeup 严格对齐
         stmt = text(
             """
             WITH due AS (
@@ -461,3 +689,127 @@ class FileJobRepository:
         return [
             WakeupJobItem(id=row.id, job_type=FileJobType(row.job_type)) for row in rows
         ]
+
+    async def claim_cdn_purge_batch(
+        self, *, limit: int = 30
+    ) -> list[ClaimedCdnPurgeJob]:
+        """按部分索引 ix_file_jobs_pending_cdn_purge 批量原子领取到期 CDN 清理任务"""
+        # 固定谓词与迁移部分索引完全一致，领取规则与普通任务共用最大尝试次数约束
+        stmt = text(
+            """
+            WITH due AS (
+                SELECT id
+                FROM file_jobs
+                WHERE status = 'pending'
+                  AND job_type = 'purge_variant_cache'
+                  AND available_at <= CURRENT_TIMESTAMP
+                  AND attempt_count < :max_attempts
+                ORDER BY available_at, id
+                LIMIT :limit
+                FOR UPDATE SKIP LOCKED
+            ),
+            claimed AS (
+                UPDATE file_jobs
+                SET status = 'running',
+                    attempt_count = file_jobs.attempt_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                FROM due
+                WHERE file_jobs.id = due.id
+                RETURNING file_jobs.id, file_jobs.variant_id, file_jobs.attempt_count
+            )
+            SELECT claimed.id, claimed.variant_id, claimed.attempt_count, fv.object_key
+            FROM claimed
+            JOIN file_variants AS fv ON fv.id = claimed.variant_id
+            ORDER BY claimed.id
+            """
+        )
+        rows = (
+            await self._session.execute(
+                stmt,
+                {"limit": limit, "max_attempts": MAX_JOB_ATTEMPTS},
+            )
+        ).all()
+        return [
+            ClaimedCdnPurgeJob(
+                id=row.id,
+                variant_id=row.variant_id,
+                attempt_count=row.attempt_count,
+                object_key=row.object_key,
+            )
+            for row in rows
+        ]
+
+    async def complete_cdn_purge_batch(
+        self,
+        *,
+        jobs: Sequence[ClaimedCdnPurgeJob],
+        outcome: str,
+        last_error: str | None,
+        retry_after_seconds: int | None,
+        now: datetime,
+    ) -> None:
+        """按 (status='running', attempt_count) 批量回写 CDN 清理批次结果"""
+        if not jobs:
+            return
+
+        # 按 attempt_count 分组，保持每条集合 UPDATE 都严格带尝试号保护
+        ids_by_attempt: dict[int, list[int]] = {}
+        for job in jobs:
+            ids_by_attempt.setdefault(job.attempt_count, []).append(job.id)
+
+        for attempt_count, job_ids in ids_by_attempt.items():
+            if outcome == "succeeded":
+                await self._session.execute(
+                    update(FileJob)
+                    .where(
+                        FileJob.id.in_(job_ids),
+                        FileJob.status == FileJobStatus.RUNNING.value,
+                        FileJob.attempt_count == attempt_count,
+                    )
+                    .values(
+                        status=FileJobStatus.SUCCEEDED.value,
+                        last_error=None,
+                        updated_at=func.current_timestamp(),
+                    )
+                )
+                continue
+
+            retry_delay = (
+                compute_retry_delay_seconds(
+                    attempt_count, retry_after_seconds=retry_after_seconds
+                )
+                if outcome == "retryable_failure"
+                else None
+            )
+            if retry_delay is not None:
+                next_time = now + timedelta(seconds=retry_delay)
+                # 退避时间取普通退避与上游 Retry-After 的较晚值
+                await self._session.execute(
+                    update(FileJob)
+                    .where(
+                        FileJob.id.in_(job_ids),
+                        FileJob.status == FileJobStatus.RUNNING.value,
+                        FileJob.attempt_count == attempt_count,
+                    )
+                    .values(
+                        status=FileJobStatus.PENDING.value,
+                        available_at=next_time,
+                        next_wakeup_at=next_time,
+                        last_error=last_error,
+                        updated_at=func.current_timestamp(),
+                    )
+                )
+            else:
+                await self._session.execute(
+                    update(FileJob)
+                    .where(
+                        FileJob.id.in_(job_ids),
+                        FileJob.status == FileJobStatus.RUNNING.value,
+                        FileJob.attempt_count == attempt_count,
+                    )
+                    .values(
+                        status=FileJobStatus.FAILED.value,
+                        last_error=last_error,
+                        updated_at=func.current_timestamp(),
+                    )
+                )

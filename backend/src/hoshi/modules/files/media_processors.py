@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 from io import BytesIO
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from hoshi.modules.files.constants import FileUploadConfig
-from hoshi.modules.files.enums import MediaFormat, MediaKind
+from hoshi.modules.files.enums import ImagePreset, MediaFormat, MediaKind
 
 # 图片解码安全阈值，防范解压炸弹与异常超高分辨率
 MAX_IMAGE_PIXELS = 25_000_000
@@ -108,6 +108,80 @@ def validate_image_bytes(
     return ValidatedImageInfo(
         content_type=declared_content_type,
         size_bytes=actual_size,
+        width=width,
+        height=height,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedImageVariant:
+    """图片规格渲染输出产物"""
+
+    data: bytes
+    content_type: str
+    size_bytes: int
+    width: int
+    height: int
+
+
+def render_image_variant(
+    raw_bytes: bytes, *, preset: ImagePreset
+) -> RenderedImageVariant:
+    """按已登记图片规格对私有原件执行 EXIF 纠正、元数据剥离与统一编码"""
+    try:
+        with Image.open(BytesIO(raw_bytes)) as opened:
+            # 纠正 EXIF 旋转方向并强制加载像素
+            transposed = ImageOps.exif_transpose(opened)
+            width, height = transposed.size
+            if (
+                width <= 0
+                or height <= 0
+                or width > MAX_IMAGE_DIMENSION
+                or height > MAX_IMAGE_DIMENSION
+                or width * height > MAX_IMAGE_PIXELS
+            ):
+                raise ImageValidationError(
+                    "IMAGE_DIMENSIONS_EXCEEDED",
+                    f"原图尺寸 {width}x{height} 超出渲染安全限制",
+                )
+
+            # 统一色彩空间：保留透明通道或转为 RGB，避免调色板/CMYK 编码失败
+            has_alpha = (
+                "A" in transposed.getbands() or "transparency" in transposed.info
+            )
+            if preset.output_format == MediaFormat.JPEG:
+                normalized = transposed.convert("RGB")
+            else:
+                normalized = transposed.convert("RGBA" if has_alpha else "RGB")
+
+            # 重新编码写入干净字节缓冲，天然剥离 EXIF/XMP/IPTC 元数据
+            output = BytesIO()
+            save_kwargs: dict[str, int | bool] = {}
+            if preset.output_format in (MediaFormat.WEBP, MediaFormat.JPEG):
+                save_kwargs["quality"] = preset.quality
+            normalized.save(
+                output,
+                format=preset.output_format.format_name,
+                **save_kwargs,
+            )
+            encoded = output.getvalue()
+    except ImageValidationError:
+        raise
+    except (
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ) as exc:
+        raise ImageValidationError(
+            "IMAGE_RENDER_FAILED", f"图片规格渲染失败: {exc}"
+        ) from None
+
+    return RenderedImageVariant(
+        data=encoded,
+        content_type=preset.output_format.mime_type,
+        size_bytes=len(encoded),
         width=width,
         height=height,
     )
